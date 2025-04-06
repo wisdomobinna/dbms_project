@@ -1,0 +1,61 @@
+{
+  "tables": {
+    "students": {
+      "name": "students",
+      "record_count": 0
+    },
+    "professors": {
+      "name": "professors",
+      "record_count": 0
+    }
+  },
+  "columns": {
+    "students": [
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "primary_key": true
+      },
+      {
+        "name": "name",
+        "type": "STRING",
+        "primary_key": false
+      },
+      {
+        "name": "age",
+        "type": "INTEGER",
+        "primary_key": false
+      }
+    ],
+    "professors": [
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "primary_key": true
+      },
+      {
+        "name": "name",
+        "type": "STRING",
+        "primary_key": false
+      },
+      {
+        "name": "age",
+        "type": "INTEGER",
+        "primary_key": false
+      }
+    ]
+  },
+  "indexes": {
+    "students": [
+      "id"
+    ],
+    "professors": [
+      "id"
+    ]
+  },
+  "primary_keys": {
+    "students": "id",
+    "professors": "id"
+  },
+  "foreign_keys": {}
+}
