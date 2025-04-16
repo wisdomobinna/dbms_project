@@ -1,0 +1,139 @@
+Created by PLY version 3.11 (http://www.dabeaz.com/ply)
+
+Unused terminals:
+
+    DOT
+    HAVING
+    SEMICOLON
+
+Grammar
+
+Rule 0     S' -> statement
+Rule 1     statement -> create_table_statement
+Rule 2     statement -> drop_table_statement
+Rule 3     statement -> create_index_statement
+Rule 4     statement -> drop_index_statement
+Rule 5     statement -> select_statement
+Rule 6     statement -> insert_statement
+Rule 7     statement -> update_statement
+Rule 8     statement -> delete_statement
+Rule 9     statement -> show_tables_statement
+Rule 10    statement -> describe_statement
+Rule 11    create_table_statement -> CREATE TABLE ID LPAREN column_def_list RPAREN
+Rule 12    column_def_list -> column_def
+Rule 13    column_def_list -> column_def COMMA column_def_list
+Rule 14    column_def -> ID INTEGER
+Rule 15    column_def -> ID INTEGER PRIMARY KEY
+Rule 16    column_def -> ID VARCHAR LPAREN NUMBER RPAREN
+Rule 17    drop_table_statement -> DROP TABLE ID
+Rule 18    create_index_statement -> CREATE INDEX ON ID LPAREN ID RPAREN
+Rule 19    drop_index_statement -> DROP INDEX ON ID LPAREN ID RPAREN
+Rule 20    select_statement -> SELECT projection FROM ID
+Rule 21    select_statement -> SELECT projection FROM ID WHERE condition
+Rule 22    select_statement -> SELECT projection FROM ID ORDER BY order_list
+Rule 23    select_statement -> SELECT projection FROM ID WHERE condition ORDER BY order_list
+Rule 24    projection -> TIMES
+Rule 25    projection -> column_list
+Rule 26    column_list -> ID
+Rule 27    column_list -> ID COMMA column_list
+Rule 28    condition -> ID EQUALS value
+Rule 29    condition -> ID GT value
+Rule 30    condition -> ID LT value
+Rule 31    condition -> ID GE value
+Rule 32    condition -> ID LE value
+Rule 33    condition -> ID NE value
+Rule 34    condition -> condition AND condition
+Rule 35    condition -> condition OR condition
+Rule 36    value -> NUMBER
+Rule 37    value -> STRING
+Rule 38    value -> ID
+Rule 39    order_list -> order_item
+Rule 40    order_list -> order_item COMMA order_list
+Rule 41    order_item -> ID
+Rule 42    order_item -> ID ASC
+Rule 43    order_item -> ID DESC
+Rule 44    insert_statement -> INSERT INTO ID VALUES LPAREN value_list RPAREN
+Rule 45    value_list -> value
+Rule 46    value_list -> value COMMA value_list
+Rule 47    update_statement -> UPDATE ID SET set_list
+Rule 48    update_statement -> UPDATE ID SET set_list WHERE condition
+Rule 49    set_list -> set_item
+Rule 50    set_list -> set_item COMMA set_list
+Rule 51    set_item -> ID EQUALS value
+Rule 52    delete_statement -> DELETE FROM ID
+Rule 53    delete_statement -> DELETE FROM ID WHERE condition
+Rule 54    show_tables_statement -> SHOW TABLES
+Rule 55    describe_statement -> DESCRIBE ID
+
+Terminals, with rules where they appear
+
+AND                  : 34
+BY                   : 22 23
+COMMA                : 13 27 40 46 50
+CREATE               : 11 18
+DELETE               : 52 53
+DESCRIBE             : 55
+DOT                  : 
+DROP                 : 17 19
+EQUALS               : 28 51
+FROM                 : 20 21 22 23 52 53
+GE                   : 31
+GT                   : 29
+HAVING               : 
+ID                   : 11 14 15 16 17 18 18 19 19 20 21 22 23 26 27 28 29 30 31 32 33 38 41 42 43 44 47 48 51 52 53 55
+INDEX                : 18 19
+INSERT               : 44
+INTEGER              : 14 15
+INTO                 : 44
+KEY                  : 15
+LE                   : 32
+LPAREN               : 11 16 18 19 44
+LT                   : 30
+NE                   : 33
+NUMBER               : 16 36
+ON                   : 18 19
+OR                   : 35
+ORDER                : 22 23
+PRIMARY              : 15
+RPAREN               : 11 16 18 19 44
+SELECT               : 20 21 22 23
+SEMICOLON            : 
+SET                  : 47 48
+SHOW                 : 54
+STRING               : 37
+TABLE                : 11 17
+UPDATE               : 47 48
+VALUES               : 44
+VARCHAR              : 16
+WHERE                : 21 23 48 53
+error                : 
+
+Nonterminals, with rules where they appear
+
+ASC                  : 42
+DESC                 : 43
+TABLES               : 54
+TIMES                : 24
+column_def           : 12 13
+column_def_list      : 11 13
+column_list          : 25 27
+condition            : 21 23 34 34 35 35 48 53
+create_index_statement : 3
+create_table_statement : 1
+delete_statement     : 8
+describe_statement   : 10
+drop_index_statement : 4
+drop_table_statement : 2
+insert_statement     : 6
+order_item           : 39 40
+order_list           : 22 23 40
+projection           : 20 21 22 23
+select_statement     : 5
+set_item             : 49 50
+set_list             : 47 48 50
+show_tables_statement : 9
+statement            : 0
+update_statement     : 7
+value                : 28 29 30 31 32 33 45 46 51
+value_list           : 44 46
+

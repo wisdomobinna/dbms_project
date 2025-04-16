@@ -1,3 +1,0 @@
-pytest
-ply      # For SQL parsing (would need TA approval)
-colorama

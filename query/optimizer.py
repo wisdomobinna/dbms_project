@@ -46,11 +46,21 @@ class QueryOptimizer:
         
         # Optimize JOIN method selection
         if "join" in optimized_query and optimized_query["join"]:
-            optimized_query["join"]["method"] = self._select_join_method(
-                optimized_query["table"],
-                optimized_query["join"]["table"],
-                optimized_query["join"]["condition"]
-            )
+            if isinstance(optimized_query["join"], list):
+                # Handle multiple joins
+                for i, join in enumerate(optimized_query["join"]):
+                    optimized_query["join"][i]["method"] = self._select_join_method(
+                        optimized_query["table"] if i == 0 else optimized_query["join"][i-1]["table"],
+                        join["table"],
+                        join["condition"]
+                    )
+            else:
+                # Handle single join
+                optimized_query["join"]["method"] = self._select_join_method(
+                    optimized_query["table"],
+                    optimized_query["join"]["table"],
+                    optimized_query["join"]["condition"]
+                )
         
         # Add execution plan info
         optimized_query["execution_plan"] = self._generate_execution_plan(optimized_query)
@@ -249,35 +259,87 @@ class QueryOptimizer:
         
         # Join operation
         if "join" in query and query["join"]:
-            join_table = query["join"]["table"]
-            join_method = query["join"].get("method", "nested-loop")
-            join_records = self.schema_manager.get_record_count(join_table)
+            joins_cost = 0
+            if isinstance(query["join"], list):
+                # Multiple joins
+                joins = []
+                current_records = record_count
+                
+                for i, join_info in enumerate(query["join"]):
+                    join_table = join_info["table"]
+                    join_method = join_info.get("method", "nested-loop")
+                    join_records = self.schema_manager.get_record_count(join_table)
+                    
+                    if join_method == "nested-loop":
+                        # Nested loop cost is outer * inner
+                        join_cost = current_records * join_records
+                    elif join_method == "sort-merge":
+                        # Sort-merge cost is cost of sorting both tables plus merging
+                        join_cost = current_records * (1 + 0.1 * (1 + min(1, 1000 * current_records))) + \
+                                  join_records * (1 + 0.1 * (1 + min(1, 1000 * join_records)))
+                    elif join_method == "index-nested-loop":
+                        # Index nested loop uses index lookup for inner table
+                        join_cost = current_records * 10  # Assume index lookups are 10x faster
+                    
+                    condition = join_info["condition"]
+                    condition_str = f"{condition.get('left_table', '')}.{condition.get('left_column', '')} = {condition.get('right_table', '')}.{condition.get('right_column', '')}"
+                    
+                    join_plan = {
+                        "table": join_table,
+                        "records": join_records,
+                        "method": join_method,
+                        "condition": condition_str,
+                        "cost": join_cost
+                    }
+                    joins.append(join_plan)
+                    joins_cost += join_cost
+                    
+                    # Update for next join
+                    current_records = int(current_records * join_records * 0.1)  # Estimate join output
+                
+                plan["joins"] = joins
+            else:
+                # Single join
+                join_table = query["join"]["table"]
+                join_method = query["join"].get("method", "nested-loop")
+                join_records = self.schema_manager.get_record_count(join_table)
+                
+                if join_method == "nested-loop":
+                    # Nested loop cost is outer * inner
+                    join_cost = plan.get("filter", {}).get("output_records", record_count) * join_records
+                elif join_method == "sort-merge":
+                    # Sort-merge cost is cost of sorting both tables plus merging
+                    join_cost = record_count * (1 + 0.1 * (1 + min(1, 1000 * record_count))) + \
+                              join_records * (1 + 0.1 * (1 + min(1, 1000 * join_records)))
+                elif join_method == "index-nested-loop":
+                    # Index nested loop uses index lookup for inner table
+                    join_cost = plan.get("filter", {}).get("output_records", record_count) * 10  # Assume index lookups are 10x faster
+                
+                condition = query["join"]["condition"]
+                condition_str = f"{condition.get('left_table', '')}.{condition.get('left_column', '')} = {condition.get('right_table', '')}.{condition.get('right_column', '')}"
+                
+                plan["join"] = {
+                    "table": join_table,
+                    "records": join_records,
+                    "method": join_method,
+                    "condition": condition_str,
+                    "cost": join_cost
+                }
+                joins_cost = join_cost
             
-            if join_method == "nested-loop":
-                # Nested loop cost is outer * inner
-                join_cost = plan.get("filter", {}).get("output_records", record_count) * join_records
-            elif join_method == "sort-merge":
-                # Sort-merge cost is cost of sorting both tables plus merging
-                join_cost = record_count * (1 + 0.1 * (1 + min(1, 1000 * record_count))) + \
-                           join_records * (1 + 0.1 * (1 + min(1, 1000 * join_records)))
-            elif join_method == "index-nested-loop":
-                # Index nested loop uses index lookup for inner table
-                join_cost = plan.get("filter", {}).get("output_records", record_count) * 10  # Assume index lookups are 10x faster
-            
-            plan["join"] = {
-                "table": join_table,
-                "records": join_records,
-                "method": join_method,
-                "condition": f"{query['join']['condition']['left_table']}.{query['join']['condition']['left_column']} = {query['join']['condition']['right_table']}.{query['join']['condition']['right_column']}",
-                "cost": join_cost
-            }
-            plan["cost"] += join_cost
+            plan["cost"] += joins_cost
         
         # Projection
+        # Estimate output records based on join type
+        if isinstance(query.get("join"), list) and len(query["join"]) > 0:
+            output_records = current_records  # Use the last join's output estimate
+        else:
+            output_records = plan.get("join", {}).get("output_records", plan.get("filter", {}).get("output_records", record_count))
+        
         if query["projection"]["type"] == "all":
             plan["projection"] = {
                 "type": "all_columns",
-                "cost": plan.get("join", {}).get("output_records", plan.get("filter", {}).get("output_records", record_count))
+                "cost": output_records
             }
         else:
             columns = [col["name"] if col["type"] == "column" else f"{col['function']}({col['argument']})" 
@@ -285,7 +347,7 @@ class QueryOptimizer:
             plan["projection"] = {
                 "type": "columns",
                 "columns": columns,
-                "cost": plan.get("join", {}).get("output_records", plan.get("filter", {}).get("output_records", record_count)) * 0.1
+                "cost": output_records * 0.1
             }
         
         plan["cost"] += plan["projection"]["cost"]
@@ -293,7 +355,7 @@ class QueryOptimizer:
         # Sorting (ORDER BY)
         if "order_by" in query and query["order_by"]:
             sort_columns = [item["column"] for item in query["order_by"]]
-            output_records = plan.get("join", {}).get("output_records", plan.get("filter", {}).get("output_records", record_count))
+            # Use previously calculated output_records
             sort_cost = output_records * (1 + 0.1 * (1 + min(1, 1000 * output_records)))
             
             plan["sort"] = {

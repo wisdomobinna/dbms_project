@@ -1,32 +1,476 @@
 """
-SQL Parser Module
+SQL Parser Module using PLY
 
-This module handles parsing SQL queries into structured representations.
-It implements a basic recursive descent parser for the subset of SQL required
-by the project specifications.
+This module handles parsing SQL queries into structured representations
+using the PLY (Python Lex-Yacc) library for the DBMS implementation project.
 """
 
-import re
+import os
+import ply.lex as lex
+import ply.yacc as yacc
 from common.exceptions import ParseError, ValidationError
 from common.types import DataType
 
 class SQLParser:
     """
-    SQL Parser class that converts SQL strings into structured representations.
+    SQL Parser class that converts SQL strings into structured representations
+    using PLY for lexical analysis and parsing.
     """
+    
+    # List of token names
+    tokens = (
+        'CREATE', 'DROP', 'TABLE', 'INDEX', 'ON', 'SELECT', 'FROM', 'WHERE',
+        'INSERT', 'INTO', 'VALUES', 'DELETE', 'UPDATE', 'SET', 'ORDER', 'BY',
+        'HAVING', 'JOIN', 'ASC', 'DESC', 'AND', 'OR', 'INTEGER', 'STRING',
+        'PRIMARY', 'KEY', 'FOREIGN', 'REFERENCES', 'SHOW', 'TABLES', 'DESCRIBE',
+        'IDENTIFIER', 'NUMBER', 'STRING_LITERAL', 'COMMA', 'SEMICOLON',
+        'LPAREN', 'RPAREN', 'DOT', 'EQUALS', 'NOTEQUALS', 'LT', 'GT', 'LE', 'GE',
+        'ASTERISK'
+    )
+    
+    # Regular expressions for simple tokens
+    t_COMMA = r','
+    t_SEMICOLON = r';'
+    t_LPAREN = r'\('
+    t_RPAREN = r'\)'
+    t_DOT = r'\.'
+    t_EQUALS = r'='
+    t_NOTEQUALS = r'!=|<>'
+    t_LT = r'<'
+    t_GT = r'>'
+    t_LE = r'<='
+    t_GE = r'>='
+    t_ASTERISK = r'\*'
+    
+    # Reserved words
+    reserved = {
+        'create': 'CREATE',
+        'drop': 'DROP',
+        'table': 'TABLE',
+        'index': 'INDEX',
+        'on': 'ON',
+        'select': 'SELECT',
+        'from': 'FROM',
+        'where': 'WHERE',
+        'insert': 'INSERT',
+        'into': 'INTO',
+        'values': 'VALUES',
+        'delete': 'DELETE',
+        'update': 'UPDATE',
+        'set': 'SET',
+        'order': 'ORDER',
+        'by': 'BY',
+        'having': 'HAVING',
+        'join': 'JOIN',
+        'asc': 'ASC',
+        'desc': 'DESC',
+        'and': 'AND',
+        'or': 'OR',
+        'integer': 'INTEGER',
+        'string': 'STRING',
+        'primary': 'PRIMARY',
+        'key': 'KEY',
+        'foreign': 'FOREIGN',
+        'references': 'REFERENCES',
+        'show': 'SHOW',
+        'tables': 'TABLES',
+        'describe': 'DESCRIBE'
+    }
+    
+    def t_IDENTIFIER(self, t):
+        r'[a-zA-Z_][a-zA-Z0-9_]*'
+        # Check for reserved words
+        t.type = self.reserved.get(t.value.lower(), 'IDENTIFIER')
+        return t
+    
+    def t_NUMBER(self, t):
+        r'\d+'
+        t.value = int(t.value)
+        return t
+    
+    def t_STRING_LITERAL(self, t):
+        r"'[^']*'|\"[^\"]*\""
+        # Remove the quotes
+        t.value = t.value[1:-1]
+        return t
+    
+    # Define a rule so we can track line numbers
+    def t_newline(self, t):
+        r'\n+'
+        t.lexer.lineno += len(t.value)
+    
+    # A string containing ignored characters (spaces and tabs)
+    t_ignore = ' \t'
+    
+    # Error handling rule
+    def t_error(self, t):
+        raise ParseError(f"Illegal character '{t.value[0]}'")
+    
+    # Build the lexer
+    def build_lexer(self):
+        # Store parser output directory for PLY
+        self.output_dir = os.path.dirname(os.path.abspath(__file__))
+        self.lexer = lex.lex(module=self, outputdir=self.output_dir, optimize=0, debug=0)
+    
+    # Build the parser
+    def build_parser(self):
+        self.parser = yacc.yacc(module=self, outputdir=self.output_dir, optimize=0, debug=0)
     
     def __init__(self):
         """Initialize the SQL parser."""
-        self.query_types = {
-            "CREATE TABLE": self._parse_create_table,
-            "DROP TABLE": self._parse_drop_table,
-            "CREATE INDEX": self._parse_create_index,
-            "DROP INDEX": self._parse_drop_index,
-            "SELECT": self._parse_select,
-            "INSERT": self._parse_insert,
-            "UPDATE": self._parse_update,
-            "DELETE": self._parse_delete
+        self.build_lexer()
+        self.build_parser()
+    
+    # Define grammar rules
+    def p_statement(self, p):
+        '''statement : create_table_statement
+                     | drop_table_statement
+                     | create_index_statement
+                     | drop_index_statement
+                     | select_statement
+                     | insert_statement
+                     | update_statement
+                     | delete_statement
+                     | show_tables_statement
+                     | describe_statement'''
+        p[0] = p[1]
+    
+    def p_show_tables_statement(self, p):
+        'show_tables_statement : SHOW TABLES'
+        p[0] = {'type': 'SHOW_TABLES'}
+    
+    def p_describe_statement(self, p):
+        'describe_statement : DESCRIBE IDENTIFIER'
+        p[0] = {'type': 'DESCRIBE', 'table_name': p[2]}
+    
+    def p_create_table_statement(self, p):
+        'create_table_statement : CREATE TABLE IDENTIFIER LPAREN column_def_list RPAREN'
+        columns = []
+        primary_key = None
+        foreign_keys = {}
+        
+        # Process column definitions
+        for col_def in p[5]:
+            if col_def.get('type') == 'column':
+                columns.append({
+                    'name': col_def['name'],
+                    'type': col_def['data_type'],
+                    'primary_key': col_def.get('primary_key', False)
+                })
+                if col_def.get('primary_key'):
+                    primary_key = col_def['name']
+            elif col_def.get('type') == 'foreign_key':
+                foreign_keys[col_def['column']] = {
+                    'table': col_def['ref_table'],
+                    'column': col_def['ref_column']
+                }
+        
+        p[0] = {
+            'type': 'CREATE_TABLE',
+            'table_name': p[3],
+            'columns': columns,
+            'primary_key': primary_key,
+            'foreign_keys': foreign_keys
         }
+    
+    def p_column_def_list(self, p):
+        '''column_def_list : column_def
+                          | column_def COMMA column_def_list'''
+        if len(p) == 2:
+            p[0] = [p[1]]
+        else:
+            p[0] = [p[1]] + p[3]
+    
+    def p_column_def(self, p):
+        '''column_def : IDENTIFIER INTEGER primary_key_opt
+                      | IDENTIFIER STRING primary_key_opt
+                      | foreign_key_def'''
+        if len(p) == 4:  # Regular column definition
+            p[0] = {
+                'type': 'column',
+                'name': p[1],
+                'data_type': DataType.INTEGER if p[2].lower() == 'integer' else DataType.STRING,
+                'primary_key': p[3]
+            }
+        else:  # Foreign key definition
+            p[0] = p[1]
+    
+    def p_primary_key_opt(self, p):
+        '''primary_key_opt : PRIMARY KEY
+                          | '''
+        if len(p) == 3:
+            p[0] = True
+        else:
+            p[0] = False
+    
+    def p_foreign_key_def(self, p):
+        'foreign_key_def : FOREIGN KEY LPAREN IDENTIFIER RPAREN REFERENCES IDENTIFIER LPAREN IDENTIFIER RPAREN'
+        p[0] = {
+            'type': 'foreign_key',
+            'column': p[4],
+            'ref_table': p[7],
+            'ref_column': p[9]
+        }
+    
+    def p_drop_table_statement(self, p):
+        'drop_table_statement : DROP TABLE IDENTIFIER'
+        p[0] = {
+            'type': 'DROP_TABLE',
+            'table_name': p[3]
+        }
+    
+    def p_create_index_statement(self, p):
+        'create_index_statement : CREATE INDEX ON IDENTIFIER LPAREN IDENTIFIER RPAREN'
+        p[0] = {
+            'type': 'CREATE_INDEX',
+            'table_name': p[4],
+            'column_name': p[6]
+        }
+    
+    def p_drop_index_statement(self, p):
+        'drop_index_statement : DROP INDEX ON IDENTIFIER LPAREN IDENTIFIER RPAREN'
+        p[0] = {
+            'type': 'DROP_INDEX',
+            'table_name': p[4],
+            'column_name': p[6]
+        }
+    
+    def p_select_statement(self, p):
+        '''select_statement : SELECT select_list FROM table_reference join_clauses_opt where_clause_opt order_by_clause_opt having_clause_opt'''
+        p[0] = {
+            'type': 'SELECT',
+            'projection': p[2],
+            'table': p[4],
+            'join': p[5],
+            'where': p[6],
+            'order_by': p[7],
+            'having': p[8]
+        }
+    
+    def p_select_list(self, p):
+        '''select_list : ASTERISK
+                      | column_list'''
+        if p[1] == '*':
+            p[0] = {'type': 'all'}
+        else:
+            p[0] = {'type': 'columns', 'columns': p[1]}
+    
+    def p_column_list(self, p):
+        '''column_list : column_item
+                       | column_item COMMA column_list'''
+        if len(p) == 2:
+            p[0] = [p[1]]
+        else:
+            p[0] = [p[1]] + p[3]
+    
+    def p_column_item(self, p):
+        '''column_item : IDENTIFIER
+                       | IDENTIFIER DOT IDENTIFIER
+                       | aggregation_function'''
+        if isinstance(p[1], dict):  # Aggregation function
+            p[0] = p[1]
+        elif len(p) > 2:  # Qualified column (table.column)
+            p[0] = {
+                'type': 'column',
+                'name': f"{p[1]}.{p[3]}"
+            }
+        else:  # Simple column
+            p[0] = {
+                'type': 'column',
+                'name': p[1]
+            }
+    
+    def p_aggregation_function(self, p):
+        'aggregation_function : IDENTIFIER LPAREN IDENTIFIER RPAREN'
+        p[0] = {
+            'type': 'aggregation',
+            'function': p[1].upper(),
+            'argument': p[3]
+        }
+    
+    def p_table_reference(self, p):
+        'table_reference : IDENTIFIER'
+        p[0] = p[1]
+    
+    def p_join_clauses_opt(self, p):
+        '''join_clauses_opt : join_clause
+                           | join_clause join_clauses_opt
+                           | '''
+        if len(p) == 1:  # Empty
+            p[0] = None
+        elif len(p) == 2:  # Single join
+            p[0] = p[1]
+        else:  # Multiple joins
+            if isinstance(p[1], list):
+                p[0] = p[1] + [p[2]]
+            else:
+                p[0] = [p[1], p[2]]
+                
+    def p_join_clause(self, p):
+        'join_clause : JOIN IDENTIFIER ON join_condition'
+        p[0] = {
+            'table': p[2],
+            'condition': p[4]
+        }
+    
+    def p_join_condition(self, p):
+        'join_condition : IDENTIFIER DOT IDENTIFIER EQUALS IDENTIFIER DOT IDENTIFIER'
+        p[0] = {
+            'left_table': p[1],
+            'left_column': p[3],
+            'right_table': p[5],
+            'right_column': p[7]
+        }
+    
+    def p_where_clause_opt(self, p):
+        '''where_clause_opt : WHERE condition
+                           | '''
+        if len(p) == 3:
+            p[0] = p[2]
+        else:
+            p[0] = None
+    
+    def p_condition(self, p):
+        '''condition : comparison
+                     | condition AND condition
+                     | condition OR condition
+                     | LPAREN condition RPAREN'''
+        if len(p) == 2:  # Simple comparison
+            p[0] = p[1]
+        elif len(p) == 4:
+            if p[1] == '(':  # Parenthesized condition
+                p[0] = p[2]
+            else:  # AND/OR condition
+                p[0] = {
+                    'type': p[2].lower(),
+                    'left': p[1],
+                    'right': p[3]
+                }
+    
+    def p_comparison(self, p):
+        '''comparison : IDENTIFIER comp_operator expression
+                      | IDENTIFIER DOT IDENTIFIER comp_operator expression'''
+        if len(p) > 4:  # Qualified column
+            p[0] = {
+                'type': 'comparison',
+                'left': {'type': 'column', 'name': f"{p[1]}.{p[3]}"},
+                'operator': p[4],
+                'right': p[5]
+            }
+        else:  # Simple column
+            p[0] = {
+                'type': 'comparison',
+                'left': {'type': 'column', 'name': p[1]},
+                'operator': p[2],
+                'right': p[3]
+            }
+    
+    def p_comp_operator(self, p):
+        '''comp_operator : EQUALS
+                        | NOTEQUALS
+                        | LT
+                        | GT
+                        | LE
+                        | GE'''
+        p[0] = p[1]
+    
+    def p_expression(self, p):
+        '''expression : IDENTIFIER
+                     | NUMBER
+                     | STRING_LITERAL'''
+        if isinstance(p[1], int):
+            p[0] = {'type': 'integer', 'value': p[1]}
+        elif isinstance(p[1], str) and (p.slice[1].type == 'STRING_LITERAL'):
+            p[0] = {'type': 'string', 'value': p[1]}
+        else:
+            p[0] = {'type': 'column', 'name': p[1]}
+    
+    def p_order_by_clause_opt(self, p):
+        '''order_by_clause_opt : ORDER BY order_list
+                              | '''
+        if len(p) == 4:
+            p[0] = p[3]
+        else:
+            p[0] = None
+    
+    def p_order_list(self, p):
+        '''order_list : order_item
+                     | order_item COMMA order_list'''
+        if len(p) == 2:
+            p[0] = [p[1]]
+        else:
+            p[0] = [p[1]] + p[3]
+    
+    def p_order_item(self, p):
+        '''order_item : IDENTIFIER
+                     | IDENTIFIER ASC
+                     | IDENTIFIER DESC'''
+        if len(p) == 2:
+            p[0] = {'column': p[1], 'direction': 'ASC'}
+        else:
+            p[0] = {'column': p[1], 'direction': p[2]}
+    
+    def p_having_clause_opt(self, p):
+        '''having_clause_opt : HAVING condition
+                            | '''
+        if len(p) == 3:
+            p[0] = p[2]
+        else:
+            p[0] = None
+    
+    def p_insert_statement(self, p):
+        'insert_statement : INSERT INTO IDENTIFIER VALUES LPAREN value_list RPAREN'
+        p[0] = {
+            'type': 'INSERT',
+            'table_name': p[3],
+            'values': p[6]
+        }
+    
+    def p_value_list(self, p):
+        '''value_list : expression
+                     | expression COMMA value_list'''
+        if len(p) == 2:
+            p[0] = [p[1]]
+        else:
+            p[0] = [p[1]] + p[3]
+    
+    def p_update_statement(self, p):
+        'update_statement : UPDATE IDENTIFIER SET set_list where_clause_opt'
+        p[0] = {
+            'type': 'UPDATE',
+            'table_name': p[2],
+            'set_items': p[4],
+            'where': p[5]
+        }
+    
+    def p_set_list(self, p):
+        '''set_list : set_item
+                   | set_item COMMA set_list'''
+        if len(p) == 2:
+            p[0] = [p[1]]
+        else:
+            p[0] = [p[1]] + p[3]
+    
+    def p_set_item(self, p):
+        'set_item : IDENTIFIER EQUALS expression'
+        p[0] = {
+            'column': p[1],
+            'value': p[3]
+        }
+    
+    def p_delete_statement(self, p):
+        'delete_statement : DELETE FROM IDENTIFIER where_clause_opt'
+        p[0] = {
+            'type': 'DELETE',
+            'table_name': p[3],
+            'where': p[4]
+        }
+    
+    def p_error(self, p):
+        if p:
+            raise ParseError(f"Syntax error at '{p.value}'")
+        else:
+            raise ParseError("Syntax error at EOF")
     
     def parse(self, query):
         """
@@ -41,14 +485,17 @@ class SQLParser:
         Raises:
             ParseError: If the query cannot be parsed
         """
-        query = query.strip()
-        
-        # Determine the query type
-        for query_type, parse_func in self.query_types.items():
-            if query.upper().startswith(query_type):
-                return parse_func(query)
-        
-        raise ParseError(f"Unsupported SQL statement: {query}")
+        try:
+            # Remove trailing semicolon if present
+            query = query.strip()
+            if query.endswith(';'):
+                query = query[:-1]
+                
+            return self.parser.parse(query, lexer=self.lexer)
+        except Exception as e:
+            if isinstance(e, ParseError):
+                raise
+            raise ParseError(f"Error parsing query: {str(e)}")
     
     def validate(self, parsed_query, schema_manager):
         """
@@ -79,475 +526,10 @@ class SQLParser:
             self._validate_update(parsed_query, schema_manager)
         elif query_type == "DELETE":
             self._validate_delete(parsed_query, schema_manager)
+        elif query_type == "DESCRIBE":
+            self._validate_describe(parsed_query, schema_manager)
+        # SHOW TABLES doesn't need validation
     
-    def _parse_create_table(self, query):
-        """
-        Parse a CREATE TABLE statement.
-        
-        Example: CREATE TABLE students (id INTEGER PRIMARY KEY, name STRING)
-        """
-        # Match the table name and column definitions
-        pattern = r"CREATE\s+TABLE\s+(\w+)\s*\((.*)\)"
-        match = re.match(pattern, query, re.IGNORECASE)
-        
-        if not match:
-            raise ParseError("Invalid CREATE TABLE syntax")
-        
-        table_name = match.group(1)
-        columns_str = match.group(2)
-        
-        # Parse column definitions
-        columns = []
-        primary_key = None
-        foreign_keys = {}
-        
-        for col_def in self._split_by_comma(columns_str):
-            col_def = col_def.strip()
-            
-            # Check if it's a foreign key definition
-            if col_def.upper().startswith("FOREIGN KEY"):
-                fk_pattern = r"FOREIGN\s+KEY\s*\((\w+)\)\s+REFERENCES\s+(\w+)\s*\((\w+)\)"
-                fk_match = re.match(fk_pattern, col_def, re.IGNORECASE)
-                
-                if not fk_match:
-                    raise ParseError(f"Invalid foreign key syntax: {col_def}")
-                
-                local_col = fk_match.group(1)
-                ref_table = fk_match.group(2)
-                ref_col = fk_match.group(3)
-                
-                foreign_keys[local_col] = {
-                    "table": ref_table,
-                    "column": ref_col
-                }
-                continue
-            
-            # Regular column definition
-            parts = col_def.split()
-            if len(parts) < 2:
-                raise ParseError(f"Invalid column definition: {col_def}")
-            
-            col_name = parts[0]
-            col_type = parts[1].upper()
-            
-            # Check if it's a primary key
-            is_primary_key = "PRIMARY KEY" in col_def.upper()
-            if is_primary_key and primary_key is not None:
-                raise ParseError("Multiple primary keys defined")
-            
-            if is_primary_key:
-                primary_key = col_name
-            
-            # Validate data type
-            if col_type not in ("INTEGER", "STRING"):
-                raise ParseError(f"Unsupported data type: {col_type}")
-            
-            columns.append({
-                "name": col_name,
-                "type": DataType.INTEGER if col_type == "INTEGER" else DataType.STRING,
-                "primary_key": is_primary_key
-            })
-        
-        return {
-            "type": "CREATE_TABLE",
-            "table_name": table_name,
-            "columns": columns,
-            "primary_key": primary_key,
-            "foreign_keys": foreign_keys
-        }
-    
-    def _parse_drop_table(self, query):
-        """
-        Parse a DROP TABLE statement.
-        
-        Example: DROP TABLE students
-        """
-        pattern = r"DROP\s+TABLE\s+(\w+)"
-        match = re.match(pattern, query, re.IGNORECASE)
-        
-        if not match:
-            raise ParseError("Invalid DROP TABLE syntax")
-        
-        return {
-            "type": "DROP_TABLE",
-            "table_name": match.group(1)
-        }
-    
-    def _parse_create_index(self, query):
-        """
-        Parse a CREATE INDEX statement.
-        
-        Example: CREATE INDEX ON students (id)
-        """
-        pattern = r"CREATE\s+INDEX\s+ON\s+(\w+)\s*\((\w+)\)"
-        match = re.match(pattern, query, re.IGNORECASE)
-        
-        if not match:
-            raise ParseError("Invalid CREATE INDEX syntax")
-        
-        return {
-            "type": "CREATE_INDEX",
-            "table_name": match.group(1),
-            "column_name": match.group(2)
-        }
-    
-    def _parse_drop_index(self, query):
-        """
-        Parse a DROP INDEX statement.
-        
-        Example: DROP INDEX ON students (id)
-        """
-        pattern = r"DROP\s+INDEX\s+ON\s+(\w+)\s*\((\w+)\)"
-        match = re.match(pattern, query, re.IGNORECASE)
-        
-        if not match:
-            raise ParseError("Invalid DROP INDEX syntax")
-        
-        return {
-            "type": "DROP_INDEX",
-            "table_name": match.group(1),
-            "column_name": match.group(2)
-        }
-    
-    def _parse_select(self, query):
-        """
-        Parse a SELECT statement.
-        
-        Examples:
-        - SELECT * FROM students
-        - SELECT id, name FROM students WHERE age > 18
-        - SELECT id, name FROM students WHERE age > 18 AND grade = 'A'
-        - SELECT id, name FROM students JOIN grades ON students.id = grades.student_id
-        - SELECT MAX(age) FROM students GROUP BY grade HAVING COUNT(*) > 5
-        """
-        # Basic SELECT pattern
-        pattern = r"SELECT\s+(.*?)\s+FROM\s+(.*?)(?:\s+WHERE\s+(.*?))?(?:\s+ORDER\s+BY\s+(.*?))?(?:\s+HAVING\s+(.*?))?$"
-        match = re.match(pattern, query, re.IGNORECASE | re.DOTALL)
-        
-        if not match:
-            # Try matching a join query
-            join_pattern = r"SELECT\s+(.*?)\s+FROM\s+(.*?)\s+JOIN\s+(.*?)\s+ON\s+(.*?)(?:\s+WHERE\s+(.*?))?(?:\s+ORDER\s+BY\s+(.*?))?(?:\s+HAVING\s+(.*?))?$"
-            join_match = re.match(join_pattern, query, re.IGNORECASE | re.DOTALL)
-            
-            if not join_match:
-                raise ParseError("Invalid SELECT syntax")
-            
-            # Parse join query
-            projection = join_match.group(1).strip()
-            table1 = join_match.group(2).strip()
-            table2 = join_match.group(3).strip()
-            join_condition = join_match.group(4).strip()
-            where_clause = join_match.group(5).strip() if join_match.group(5) else None
-            order_by = join_match.group(6).strip() if join_match.group(6) else None
-            having = join_match.group(7).strip() if join_match.group(7) else None
-            
-            return {
-                "type": "SELECT",
-                "projection": self._parse_projection(projection),
-                "table": table1,
-                "join": {
-                    "table": table2,
-                    "condition": self._parse_join_condition(join_condition)
-                },
-                "where": self._parse_conditions(where_clause) if where_clause else None,
-                "order_by": self._parse_order_by(order_by) if order_by else None,
-                "having": self._parse_having(having) if having else None
-            }
-        
-        # Parse basic SELECT query
-        projection = match.group(1).strip()
-        table = match.group(2).strip()
-        where_clause = match.group(3).strip() if match.group(3) else None
-        order_by = match.group(4).strip() if match.group(4) else None
-        having = match.group(5).strip() if match.group(5) else None
-        
-        return {
-            "type": "SELECT",
-            "projection": self._parse_projection(projection),
-            "table": table,
-            "where": self._parse_conditions(where_clause) if where_clause else None,
-            "order_by": self._parse_order_by(order_by) if order_by else None,
-            "having": self._parse_having(having) if having else None
-        }
-    
-    def _parse_insert(self, query):
-        """
-        Parse an INSERT statement.
-        
-        Example: INSERT INTO students VALUES (1, 'John Doe')
-        """
-        pattern = r"INSERT\s+INTO\s+(\w+)\s+VALUES\s*\((.*)\)"
-        match = re.match(pattern, query, re.IGNORECASE)
-        
-        if not match:
-            raise ParseError("Invalid INSERT syntax")
-        
-        table_name = match.group(1)
-        values_str = match.group(2)
-        
-        # Parse values, handling quoted strings
-        values = []
-        for value in self._split_by_comma(values_str):
-            value = value.strip()
-            
-            # Handle string literals (quoted)
-            if (value.startswith("'") and value.endswith("'")) or \
-               (value.startswith('"') and value.endswith('"')):
-                values.append({"type": "string", "value": value[1:-1]})
-            else:
-                try:
-                    # Try to parse as integer
-                    int_value = int(value)
-                    values.append({"type": "integer", "value": int_value})
-                except ValueError:
-                    raise ParseError(f"Invalid value: {value}")
-        
-        return {
-            "type": "INSERT",
-            "table_name": table_name,
-            "values": values
-        }
-    
-    def _parse_update(self, query):
-        """
-        Parse an UPDATE statement.
-        
-        Example: UPDATE students SET grade = 'A' WHERE id = 1
-        """
-        pattern = r"UPDATE\s+(\w+)\s+SET\s+(.*?)(?:\s+WHERE\s+(.*))?$"
-        match = re.match(pattern, query, re.IGNORECASE)
-        
-        if not match:
-            raise ParseError("Invalid UPDATE syntax")
-        
-        table_name = match.group(1)
-        set_clause = match.group(2)
-        where_clause = match.group(3)
-        
-        # Parse SET clause
-        set_items = []
-        for item in self._split_by_comma(set_clause):
-            item = item.strip()
-            parts = item.split('=', 1)
-            
-            if len(parts) != 2:
-                raise ParseError(f"Invalid SET item: {item}")
-            
-            column = parts[0].strip()
-            value = parts[1].strip()
-            
-            # Handle string literals (quoted)
-            if (value.startswith("'") and value.endswith("'")) or \
-               (value.startswith('"') and value.endswith('"')):
-                set_items.append({
-                    "column": column,
-                    "value": {"type": "string", "value": value[1:-1]}
-                })
-            else:
-                try:
-                    # Try to parse as integer
-                    int_value = int(value)
-                    set_items.append({
-                        "column": column,
-                        "value": {"type": "integer", "value": int_value}
-                    })
-                except ValueError:
-                    raise ParseError(f"Invalid value: {value}")
-        
-        return {
-            "type": "UPDATE",
-            "table_name": table_name,
-            "set_items": set_items,
-            "where": self._parse_conditions(where_clause) if where_clause else None
-        }
-    
-    def _parse_delete(self, query):
-        """
-        Parse a DELETE statement.
-        
-        Example: DELETE FROM students WHERE id = 1
-        """
-        pattern = r"DELETE\s+FROM\s+(\w+)(?:\s+WHERE\s+(.*))?$"
-        match = re.match(pattern, query, re.IGNORECASE)
-        
-        if not match:
-            raise ParseError("Invalid DELETE syntax")
-        
-        table_name = match.group(1)
-        where_clause = match.group(2)
-        
-        return {
-            "type": "DELETE",
-            "table_name": table_name,
-            "where": self._parse_conditions(where_clause) if where_clause else None
-        }
-    
-    def _parse_projection(self, projection):
-        """Parse the projection part of a SELECT query."""
-        if projection == '*':
-            return {"type": "all"}
-        
-        columns = []
-        for col in self._split_by_comma(projection):
-            col = col.strip()
-            
-            # Check for aggregation functions
-            agg_match = re.match(r"(MIN|MAX|SUM|AVG|COUNT)\((.*?)\)", col, re.IGNORECASE)
-            if agg_match:
-                func = agg_match.group(1).upper()
-                arg = agg_match.group(2).strip()
-                columns.append({
-                    "type": "aggregation",
-                    "function": func,
-                    "argument": arg
-                })
-            else:
-                columns.append({
-                    "type": "column",
-                    "name": col
-                })
-        
-        return {"type": "columns", "columns": columns}
-    
-    def _parse_conditions(self, conditions_str):
-        """Parse WHERE conditions."""
-        if not conditions_str:
-            return None
-        
-        # Check for AND/OR operators
-        if " AND " in conditions_str.upper():
-            parts = conditions_str.split(" AND ", 1)
-            return {
-                "type": "and",
-                "left": self._parse_conditions(parts[0].strip()),
-                "right": self._parse_conditions(parts[1].strip())
-            }
-        elif " OR " in conditions_str.upper():
-            parts = conditions_str.split(" OR ", 1)
-            return {
-                "type": "or",
-                "left": self._parse_conditions(parts[0].strip()),
-                "right": self._parse_conditions(parts[1].strip())
-            }
-        
-        # Single condition
-        operators = ["=", "!=", "<>", "<", "<=", ">", ">="]
-        for op in operators:
-            if op in conditions_str:
-                parts = conditions_str.split(op, 1)
-                left = parts[0].strip()
-                right = parts[1].strip()
-                
-                # Handle string literals
-                if (right.startswith("'") and right.endswith("'")) or \
-                   (right.startswith('"') and right.endswith('"')):
-                    right_val = {"type": "string", "value": right[1:-1]}
-                else:
-                    try:
-                        # Try to parse as integer
-                        int_value = int(right)
-                        right_val = {"type": "integer", "value": int_value}
-                    except ValueError:
-                        # Must be a column reference
-                        right_val = {"type": "column", "name": right}
-                
-                return {
-                    "type": "comparison",
-                    "left": {"type": "column", "name": left},
-                    "operator": op,
-                    "right": right_val
-                }
-        
-        raise ParseError(f"Invalid condition: {conditions_str}")
-    
-    def _parse_join_condition(self, condition):
-        """Parse a JOIN ON condition."""
-        if "=" not in condition:
-            raise ParseError(f"Invalid join condition: {condition}")
-        
-        parts = condition.split("=", 1)
-        left = parts[0].strip()
-        right = parts[1].strip()
-        
-        # Both sides should be column references with table names
-        if "." not in left or "." not in right:
-            raise ParseError(f"Join condition must reference columns with table names: {condition}")
-        
-        left_parts = left.split(".", 1)
-        right_parts = right.split(".", 1)
-        
-        return {
-            "left_table": left_parts[0],
-            "left_column": left_parts[1],
-            "right_table": right_parts[0],
-            "right_column": right_parts[1]
-        }
-    
-    def _parse_order_by(self, order_by):
-        """Parse ORDER BY clause."""
-        columns = []
-        for col in self._split_by_comma(order_by):
-            col = col.strip()
-            
-            if col.upper().endswith(" DESC"):
-                columns.append({
-                    "column": col[:-5].strip(),
-                    "direction": "DESC"
-                })
-            elif col.upper().endswith(" ASC"):
-                columns.append({
-                    "column": col[:-4].strip(),
-                    "direction": "ASC"
-                })
-            else:
-                columns.append({
-                    "column": col,
-                    "direction": "ASC"  # Default is ascending
-                })
-        
-        return columns
-    
-    def _parse_having(self, having):
-        """Parse HAVING clause."""
-        # HAVING clause is similar to WHERE but typically contains aggregations
-        return self._parse_conditions(having)
-    
-    def _split_by_comma(self, text):
-        """
-        Split a string by commas, accounting for parentheses and quotes.
-        """
-        result = []
-        current = ""
-        in_quotes = False
-        quote_char = None
-        paren_level = 0
-        
-        for char in text:
-            if char in ["'", '"'] and (not quote_char or char == quote_char):
-                in_quotes = not in_quotes
-                if in_quotes:
-                    quote_char = char
-                else:
-                    quote_char = None
-                current += char
-            elif char == '(' and not in_quotes:
-                paren_level += 1
-                current += char
-            elif char == ')' and not in_quotes:
-                paren_level -= 1
-                current += char
-            elif char == ',' and not in_quotes and paren_level == 0:
-                result.append(current)
-                current = ""
-            else:
-                current += char
-        
-        if current:
-            result.append(current)
-        
-        return result
-    
-    # Validation methods
     def _validate_create_table(self, parsed_query, schema_manager):
         """Validate CREATE TABLE query."""
         table_name = parsed_query["table_name"]
@@ -687,6 +669,13 @@ class SQLParser:
         # Validate WHERE clause if present
         if parsed_query["where"]:
             self._validate_condition(parsed_query["where"], table_name, schema_manager)
+    
+    def _validate_describe(self, parsed_query, schema_manager):
+        """Validate DESCRIBE query."""
+        table_name = parsed_query["table_name"]
+        
+        if not schema_manager.table_exists(table_name):
+            raise ValidationError(f"Table '{table_name}' does not exist")
     
     def _validate_condition(self, condition, table_name, schema_manager):
         """Validate a WHERE condition."""

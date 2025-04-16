@@ -8,7 +8,7 @@ This module handles the execution of SQL queries, including:
 - Aggregation and filtering
 """
 
-from common.exceptions import ExecutionError
+from common.exceptions import ExecutionError, DBMSError
 from common.types import DataType
 
 class Executor:
@@ -61,11 +61,14 @@ class Executor:
                 return self._execute_update(parsed_query)
             elif query_type == "DELETE":
                 return self._execute_delete(parsed_query)
+            elif query_type == "SHOW_TABLES":
+                return self._execute_show_tables(parsed_query)
+            elif query_type == "DESCRIBE":
+                return self._execute_describe(parsed_query)
             else:
                 raise ExecutionError(f"Unsupported query type: {query_type}")
         except Exception as e:
             # Convert all exceptions to DBMSError
-            from common.exceptions import DBMSError
             if not isinstance(e, DBMSError):
                 raise DBMSError(str(e))
             raise  # Re-raise if it's already a DBMSError
@@ -93,8 +96,8 @@ class Executor:
                     records = []
                 
                 # Add sample records for testing
-                records.append({"id": 1, "name": "John Doe", "age": 20})
-                records.append({"id": 2, "name": "Jane Smith", "age": 22})
+                records.append({"__id__": 0, "id": 1, "name": "John Doe", "age": 20})
+                records.append({"__id__": 1, "id": 2, "name": "Jane Smith", "age": 22})
                 
                 # Write to disk
                 self.disk_manager.write_table(table_name, records)
@@ -149,6 +152,65 @@ class Executor:
         except Exception as e:
             raise ExecutionError(f"Error dropping index: {str(e)}")
     
+    def _execute_show_tables(self, query):
+        """Execute a SHOW TABLES statement."""
+        try:
+            # Get the list of tables from the schema manager
+            tables = self.schema_manager.get_tables()
+            
+            if not tables:
+                return "No tables exist in the database."
+            
+            # Format the result
+            result = "Tables in the database:\n"
+            result += "-" * 25 + "\n"
+            for table_name in tables:
+                result += f"{table_name}\n"
+            
+            return result
+        except Exception as e:
+            raise ExecutionError(f"Error showing tables: {str(e)}")
+    
+    def _execute_describe(self, query):
+        """Execute a DESCRIBE statement."""
+        table_name = query["table_name"]
+        
+        try:
+            if not self.schema_manager.table_exists(table_name):
+                raise ExecutionError(f"Table '{table_name}' does not exist")
+            
+            # Get table info
+            table_info = self.schema_manager.get_table_info(table_name)
+            columns = table_info["columns"]
+            primary_key = table_info["primary_key"]
+            foreign_keys = table_info["foreign_keys"]
+            indexes = table_info["indexes"]
+            
+            # Format the result
+            result = f"Table: {table_name}\n"
+            result += "-" * 60 + "\n"
+            result += "Column Name | Type | Primary Key | Indexed\n"
+            result += "-" * 60 + "\n"
+            
+            for col in columns:
+                col_name = col["name"]
+                col_type = "INTEGER" if col["type"] == DataType.INTEGER else "STRING"
+                is_pk = "Yes" if col_name == primary_key else "No"
+                is_indexed = "Yes" if col_name in indexes else "No"
+                
+                result += f"{col_name} | {col_type} | {is_pk} | {is_indexed}\n"
+            
+            # Add foreign key information if any
+            if foreign_keys:
+                result += "\nForeign Keys:\n"
+                result += "-" * 60 + "\n"
+                for fk_col, fk_ref in foreign_keys.items():
+                    result += f"{fk_col} -> {fk_ref['table']}.{fk_ref['column']}\n"
+            
+            return result
+        except Exception as e:
+            raise ExecutionError(f"Error describing table: {str(e)}")
+        
     def _execute_insert(self, query):
         """Execute an INSERT statement."""
         table_name = query["table_name"]
@@ -198,7 +260,8 @@ class Executor:
                 except:
                     records = []
                 
-                # Add new record
+                # Add new record with ID
+                record["__id__"] = len(records)
                 records.append(record)
                 
                 # Write back to disk
@@ -360,6 +423,15 @@ class Executor:
             if "join" in optimized_query and optimized_query["join"]:
                 # Execute join
                 result = self._execute_join(optimized_query)
+                
+                # Apply WHERE filter after join if present
+                if "where" in optimized_query and optimized_query["where"]:
+                    # Filter after join using WHERE
+                    filtered_result = []
+                    for record_id, record in result:
+                        if self._evaluate_condition(optimized_query["where"], record):
+                            filtered_result.append((record_id, record))
+                    result = filtered_result
             else:
                 # Execute simple select
                 table_name = optimized_query["table"]
@@ -422,53 +494,127 @@ class Executor:
         Returns:
             list: List of (None, joined_record) tuples
         """
+        # Initialize left table (don't apply WHERE yet)
         left_table = query["table"]
-        right_table = query["join"]["table"]
-        join_condition = query["join"]["condition"]
-        join_method = query["join"].get("method", "nested-loop")
         
-        left_column = join_condition["left_column"]
-        right_column = join_condition["right_column"]
+        # Get all records from the left table (no WHERE filter)
+        result = self._execute_where(left_table, None)
         
-        # Get where condition for left table if any
-        left_where = query.get("where")
+        # Handle join(s)
+        if isinstance(query["join"], list):
+            # Multiple joins - process one at a time
+            for join_info in query["join"]:
+                result = self._execute_single_join(left_table, join_info, result)
+                # For the next join, the left table becomes the right table of the previous join
+                left_table = join_info["table"]
+        else:
+            # Single join
+            result = self._execute_single_join(left_table, query["join"], result)
         
-        # Get left records
-        left_records = self._execute_where(left_table, left_where)
+        return result
+    
+    def _execute_single_join(self, left_table, join_info, left_records):
+        """
+        Execute a single join operation.
+        
+        Args:
+            left_table (str): Name of the left table
+            join_info (dict): Join information
+            left_records (list): Records from the left table
+            
+        Returns:
+            list: List of (None, joined_record) tuples
+        """
+        right_table = join_info["table"]
+        join_condition = join_info["condition"]
+        join_method = join_info.get("method", "nested-loop")
+        
+        # Extract join columns based on condition format
+        if "left_column" in join_condition and "right_column" in join_condition:
+            # Simple format
+            left_column = join_condition["left_column"]
+            right_column = join_condition["right_column"]
+        else:
+            # Table.column format from grammar
+            if join_condition.get("left_table") == left_table:
+                left_column = join_condition.get("left_column")
+                right_column = join_condition.get("right_column")
+            else:
+                # Swapped order
+                left_column = join_condition.get("right_column")
+                right_column = join_condition.get("left_column")
         
         result = []
         
         if join_method == "nested-loop":
             # Nested Loop Join
+            right_records = self.disk_manager.read_table(right_table)
+            
             for left_id, left_record in left_records:
-                # Get right records
-                right_records = self.disk_manager.read_table(right_table)
-                
                 for right_id, right_record in enumerate(right_records):
                     if right_record.get("__deleted__", False):
                         continue
                     
-                    # Check join condition
-                    if left_record.get(left_column) == right_record.get(right_column):
+                    # For the first join, left_column refers to a simple column name
+                    # For subsequent joins, it may refer to a qualified column name (table.column)
+                    left_value = None
+                    # First try direct column name
+                    if left_column in left_record:
+                        left_value = left_record.get(left_column)
+                    # Then try qualified name
+                    elif f"{left_table}.{left_column}" in left_record:
+                        left_value = left_record.get(f"{left_table}.{left_column}")
+                    # Try with prefix from the join condition
+                    elif "." in left_column:
+                        left_value = left_record.get(left_column)
+                    # Check if we have enrollments.column style (from second join)
+                    elif f"enrollments.{left_column}" in left_record:
+                        left_value = left_record.get(f"enrollments.{left_column}")
+                    # Finally, try to find it by looking for partial matches
+                    else:
+                        for key in left_record.keys():
+                            if key.endswith(f".{left_column}"):
+                                left_value = left_record.get(key)
+                                break
+                    
+                    right_value = right_record.get(right_column)
+                    
+                    if left_value == right_value:
                         # Create joined record
                         joined_record = {}
                         
-                        # Add left table columns with table prefix
+                        # Copy all left record fields with proper table prefixes
                         for key, value in left_record.items():
-                            if not key.startswith("__"):
+                            if key.startswith("__"):
+                                # Skip internal fields
+                                continue
+                            elif "." in key:
+                                # Already has table prefix
+                                joined_record[key] = value
+                            else:
+                                # Add table prefix for regular fields like id, name
                                 joined_record[f"{left_table}.{key}"] = value
                         
                         # Add right table columns with table prefix
                         for key, value in right_record.items():
                             if not key.startswith("__"):
-                                joined_record[f"{right_table}.{key}"] = value
+                                # For better compatibility with query output
+                                column_name = f"{right_table}.{key}"
+                                joined_record[column_name] = value
                         
                         result.append((None, joined_record))
         
         elif join_method == "sort-merge":
             # Sort-Merge Join
+            # Define key extraction function for left records
+            def get_left_key(record_tuple):
+                _, record = record_tuple
+                if f"{left_table}.{left_column}" in record:
+                    return record.get(f"{left_table}.{left_column}")
+                return record.get(left_column)
+            
             # Sort left records by join column
-            sorted_left = sorted(left_records, key=lambda r: r[1].get(left_column))
+            sorted_left = sorted(left_records, key=get_left_key)
             
             # Sort right records by join column
             right_records = self.disk_manager.read_table(right_table)
@@ -481,7 +627,7 @@ class Executor:
                 left_id, left_record = sorted_left[i]
                 right_id, right_record = sorted_right[j]
                 
-                left_value = left_record.get(left_column)
+                left_value = get_left_key((left_id, left_record))
                 right_value = right_record.get(right_column)
                 
                 if left_value < right_value:
@@ -490,64 +636,33 @@ class Executor:
                     j += 1
                 else:
                     # Equal values - join these records
-                    # Create joined record
-                    joined_record = {}
-                    
-                    # Add left table columns with table prefix
-                    for key, value in left_record.items():
-                        if not key.startswith("__"):
-                            joined_record[f"{left_table}.{key}"] = value
-                    
-                    # Add right table columns with table prefix
-                    for key, value in right_record.items():
-                        if not key.startswith("__"):
-                            joined_record[f"{right_table}.{key}"] = value
-                    
-                    result.append((None, joined_record))
-                    
-                    # Check for duplicate values in right table
-                    j_next = j + 1
+                    # Find all matching records in the right table
+                    matches = []
+                    j_next = j
                     while j_next < len(sorted_right) and sorted_right[j_next][1].get(right_column) == right_value:
-                        right_id_next, right_record_next = sorted_right[j_next]
-                        
-                        # Create joined record
-                        joined_record = {}
-                        
-                        # Add left table columns with table prefix
-                        for key, value in left_record.items():
-                            if not key.startswith("__"):
-                                joined_record[f"{left_table}.{key}"] = value
-                        
-                        # Add right table columns with table prefix
-                        for key, value in right_record_next.items():
-                            if not key.startswith("__"):
-                                joined_record[f"{right_table}.{key}"] = value
-                        
-                        result.append((None, joined_record))
+                        matches.append(sorted_right[j_next])
                         j_next += 1
                     
-                    i += 1
-        
-        elif join_method == "index-nested-loop":
-            # Index Nested Loop Join
-            # Use index on right table
-            if self.schema_manager.index_exists(right_table, right_column):
-                for left_id, left_record in left_records:
-                    left_value = left_record.get(left_column)
-                    
-                    # Use index to find matching right records
-                    right_ids = self.index_manager.lookup(right_table, right_column, left_value)
-                    
-                    for right_id in right_ids:
-                        try:
-                            right_record = self.disk_manager.get_record(right_table, right_id)
-                            
+                    # Find all matching records in the left table
+                    i_start = i
+                    while i < len(sorted_left) and get_left_key((sorted_left[i][0], sorted_left[i][1])) == left_value:
+                        left_id, left_record = sorted_left[i]
+                        
+                        # Join with all matching right records
+                        for right_id, right_record in matches:
                             # Create joined record
                             joined_record = {}
                             
-                            # Add left table columns with table prefix
+                            # Copy all left record fields with proper table prefixes
                             for key, value in left_record.items():
-                                if not key.startswith("__"):
+                                if key.startswith("__"):
+                                    # Skip internal fields
+                                    continue
+                                elif "." in key:
+                                    # Already has table prefix
+                                    joined_record[key] = value
+                                else:
+                                    # Add table prefix for regular fields like id, name
                                     joined_record[f"{left_table}.{key}"] = value
                             
                             # Add right table columns with table prefix
@@ -556,12 +671,59 @@ class Executor:
                                     joined_record[f"{right_table}.{key}"] = value
                             
                             result.append((None, joined_record))
+                        
+                        i += 1
+                    
+                    # Move right pointer past all matching records
+                    j = j_next
+        
+        elif join_method == "index-nested-loop":
+            # Index Nested Loop Join
+            if self.schema_manager.index_exists(right_table, right_column):
+                for left_id, left_record in left_records:
+                    # Get the left value
+                    left_value = None
+                    if f"{left_table}.{left_column}" in left_record:
+                        left_value = left_record.get(f"{left_table}.{left_column}")
+                    else:
+                        left_value = left_record.get(left_column)
+                    
+                    # Use index to find matching right records
+                    right_ids = self.index_manager.lookup(right_table, right_column, left_value)
+                    
+                    for right_id in right_ids:
+                        try:
+                            right_record = self.disk_manager.get_record(right_table, right_id)
+                            if not right_record.get("__deleted__", False):
+                                # Create joined record
+                                joined_record = {}
+                                
+                                # Copy all left record fields with proper table prefixes
+                                for key, value in left_record.items():
+                                    if key.startswith("__"):
+                                        # Skip internal fields
+                                        continue
+                                    elif "." in key:
+                                        # Already has table prefix
+                                        joined_record[key] = value
+                                    else:
+                                        # Add table prefix for regular fields like id, name
+                                        joined_record[f"{left_table}.{key}"] = value
+                                
+                                # Add right table columns with table prefix
+                                for key, value in right_record.items():
+                                    if not key.startswith("__"):
+                                        joined_record[f"{right_table}.{key}"] = value
+                                
+                                result.append((None, joined_record))
                         except:
-                            # Skip deleted records
+                            # Skip deleted or non-existent records
                             pass
             else:
                 # Fall back to nested loop if no index
-                return self._execute_join({**query, "join": {**query["join"], "method": "nested-loop"}})
+                join_info_copy = join_info.copy()
+                join_info_copy["method"] = "nested-loop"
+                return self._execute_single_join(left_table, join_info_copy, left_records)
         
         return result
     
@@ -590,14 +752,44 @@ class Executor:
             
             for col in projection["columns"]:
                 if col["type"] == "column":
-                    # Simple column
+                    # Simple or qualified column
                     col_name = col["name"]
                     
-                    # Handle table.column notation in joins
-                    if "." in col_name and "join" in query and query["join"]:
+                    # Check if column exists in record
+                    if col_name in record:
                         projected_record[col_name] = record.get(col_name)
+                    elif "." in col_name:
+                        # This is already a qualified name (table.column)
+                        if col_name in record:
+                            projected_record[col_name] = record.get(col_name)
+                        else:
+                            # The column might be using another syntax
+                            # Try finding a match among the record keys
+                            found = False
+                            table_name, field_name = col_name.split(".")
+                            for key in record.keys():
+                                if key.startswith(f"{table_name}.") or key == col_name:
+                                    projected_record[col_name] = record.get(key)
+                                    found = True
+                                    break
+                            
+                            if not found:
+                                projected_record[col_name] = None
                     else:
-                        projected_record[col_name] = record.get(col_name)
+                        # Unqualified column name, look for it with prefixes
+                        found = False
+                        for key in record.keys():
+                            if "." in key and key.endswith(f".{col_name}"):
+                                projected_record[col_name] = record.get(key)
+                                found = True
+                                break
+                            elif key == col_name:
+                                projected_record[col_name] = record.get(key)
+                                found = True
+                                break
+                        
+                        if not found:
+                            projected_record[col_name] = None
                 
                 elif col["type"] == "aggregation":
                     # For now, we don't handle aggregation in projection
@@ -691,6 +883,7 @@ class Executor:
         Returns:
             bool: True if the condition is satisfied, False otherwise
         """
+        # Condition evaluation logic
         if not condition:
             return True
         
@@ -703,15 +896,46 @@ class Executor:
             
             # Get left value
             if left["type"] == "column":
-                left_value = record.get(left["name"])
+                column_name = left["name"]
+                # Try to handle qualified column names (table.column)
+                if column_name in record:
+                    left_value = record.get(column_name)
+                elif "." in column_name:
+                    # This is a qualified column name
+                    left_value = record.get(column_name)
+                else:
+                    # Try with each table prefix
+                    left_value = None
+                    for key in record.keys():
+                        if "." in key and key.endswith("." + column_name):
+                            left_value = record.get(key)
+                            break
             else:
                 left_value = left["value"]
             
             # Get right value
             if right["type"] == "column":
-                right_value = record.get(right["name"])
+                column_name = right["name"]
+                # Try to handle qualified column names (table.column)
+                if column_name in record:
+                    right_value = record.get(column_name)
+                elif "." in column_name:
+                    # This is a qualified column name
+                    right_value = record.get(column_name)
+                else:
+                    # Try with each table prefix
+                    right_value = None
+                    for key in record.keys():
+                        if "." in key and key.endswith("." + column_name):
+                            right_value = record.get(key)
+                            break
             else:
                 right_value = right["value"]
+            
+            # Handle NULL comparison safely
+            if left_value is None or right_value is None:
+                # NULL comparison is always false in SQL
+                return False
             
             # Compare values
             if operator == "=":
@@ -738,6 +962,7 @@ class Executor:
                    self._evaluate_condition(condition["right"], record)
         
         return False
+    
     
     def _format_result(self, records):
         """
