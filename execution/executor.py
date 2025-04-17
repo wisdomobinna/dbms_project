@@ -964,41 +964,73 @@ class Executor:
         return False
     
     
+    # def _format_result(self, records):
+    #     """
+    #     Format query results for output.
+        
+    #     Args:
+    #         records (list): List of (record_id, record) tuples
+            
+    #     Returns:
+    #         str: Formatted result
+    #     """
+    #     if not records:
+    #         return "No results found"
+        
+    #     # Get column names from the first record
+    #     _, first_record = records[0]
+    #     columns = list(first_record.keys())
+        
+    #     # Create header row
+    #     header = " | ".join(columns)
+    #     separator = "-" * len(header)
+        
+    #     # Create rows
+    #     rows = []
+    #     for _, record in records:
+    #         values = []
+    #         for col in columns:
+    #             value = record.get(col)
+    #             if value is None:
+    #                 value = "NULL"
+    #             else:
+    #                 value = str(value)
+    #             values.append(value)
+    #         rows.append(" | ".join(values))
+        
+    #     # Combine everything
+    #     result = f"{header}\n{separator}\n" + "\n".join(rows)
+        
+    #     return result
+    
     def _format_result(self, records):
         """
-        Format query results for output.
-        
+        Format query results for structured output only (no terminal pretty-print).
+
         Args:
             records (list): List of (record_id, record) tuples
-            
+
         Returns:
-            str: Formatted result
+            dict: {
+                'columns': List of column names,
+                'rows': List of tuples (data)
+            }
         """
         if not records:
-            return "No results found"
-        
-        # Get column names from the first record
+            return {
+                "columns": [],
+                "rows": []
+            }
+
         _, first_record = records[0]
         columns = list(first_record.keys())
-        
-        # Create header row
-        header = " | ".join(columns)
-        separator = "-" * len(header)
-        
-        # Create rows
-        rows = []
+
+        data_rows = []
         for _, record in records:
-            values = []
-            for col in columns:
-                value = record.get(col)
-                if value is None:
-                    value = "NULL"
-                else:
-                    value = str(value)
-                values.append(value)
-            rows.append(" | ".join(values))
-        
-        # Combine everything
-        result = f"{header}\n{separator}\n" + "\n".join(rows)
-        
-        return result
+            row = tuple(record.get(col, "NULL") if record.get(col) is not None else "NULL" for col in columns)
+            data_rows.append(row)
+
+        return {
+            "columns": columns,
+            "rows": data_rows
+        }
