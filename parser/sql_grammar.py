@@ -91,39 +91,131 @@ def p_drop_index_statement(parser, p):
     }
 
 def p_select_statement(parser, p):
-    '''select_statement : SELECT projection FROM ID
-                        | SELECT projection FROM ID WHERE condition
-                        | SELECT projection FROM ID ORDER BY order_list
-                        | SELECT projection FROM ID WHERE condition ORDER BY order_list
-                        | SELECT projection FROM ID JOIN ID ON join_condition
-                        | SELECT projection FROM ID JOIN ID ON join_condition WHERE condition
-                        | SELECT projection FROM ID JOIN ID ON join_condition ORDER BY order_list
-                        | SELECT projection FROM ID JOIN ID ON join_condition WHERE condition ORDER BY order_list'''
+    '''select_statement : SELECT projection FROM table_reference
+                        | SELECT projection FROM table_reference where_clause
+                        | SELECT projection FROM table_reference order_by_clause
+                        | SELECT projection FROM table_reference group_by_clause
+                        | SELECT projection FROM table_reference limit_clause
+                        | SELECT projection FROM table_reference where_clause order_by_clause
+                        | SELECT projection FROM table_reference where_clause group_by_clause
+                        | SELECT projection FROM table_reference where_clause limit_clause
+                        | SELECT projection FROM table_reference order_by_clause limit_clause
+                        | SELECT projection FROM table_reference group_by_clause order_by_clause
+                        | SELECT projection FROM table_reference group_by_clause limit_clause
+                        | SELECT projection FROM table_reference where_clause order_by_clause limit_clause
+                        | SELECT projection FROM table_reference where_clause group_by_clause order_by_clause
+                        | SELECT projection FROM table_reference where_clause group_by_clause limit_clause
+                        | SELECT projection FROM table_reference group_by_clause order_by_clause limit_clause
+                        | SELECT projection FROM table_reference where_clause group_by_clause order_by_clause limit_clause
+                        | SELECT projection FROM table_reference join_clause
+                        | SELECT projection FROM table_reference join_clause where_clause
+                        | SELECT projection FROM table_reference join_clause order_by_clause
+                        | SELECT projection FROM table_reference join_clause group_by_clause
+                        | SELECT projection FROM table_reference join_clause limit_clause
+                        | SELECT projection FROM table_reference join_clause where_clause order_by_clause
+                        | SELECT projection FROM table_reference join_clause where_clause group_by_clause
+                        | SELECT projection FROM table_reference join_clause where_clause limit_clause
+                        | SELECT projection FROM table_reference join_clause order_by_clause limit_clause
+                        | SELECT projection FROM table_reference join_clause group_by_clause order_by_clause
+                        | SELECT projection FROM table_reference join_clause group_by_clause limit_clause
+                        | SELECT projection FROM table_reference join_clause where_clause order_by_clause limit_clause
+                        | SELECT projection FROM table_reference join_clause where_clause group_by_clause order_by_clause
+                        | SELECT projection FROM table_reference join_clause where_clause group_by_clause limit_clause
+                        | SELECT projection FROM table_reference join_clause group_by_clause order_by_clause limit_clause
+                        | SELECT projection FROM table_reference join_clause where_clause group_by_clause order_by_clause limit_clause'''
     result = {
         'type': 'SELECT',
         'projection': p[2],
         'table': p[4]
     }
     
-    # Check for JOIN clause
-    idx = 5
-    if len(p) > idx and p[idx] == 'JOIN':
-        result['join'] = {
-            'table': p[idx+1],
-            'condition': p[idx+3]
-        }
-        idx += 4  # Move past JOIN ID ON join_condition
-    
-    # Check for WHERE clause
-    if idx < len(p) and p[idx] == 'WHERE':
-        result['where'] = p[idx+1]
-        idx += 2  # Move past WHERE condition
-    
-    # Check for ORDER BY clause
-    if idx < len(p) and p[idx] == 'ORDER' and p[idx+1] == 'BY':
-        result['order_by'] = p[idx+2]
+    # Process remaining clauses 
+    i = 5
+    while i < len(p):
+        if p[i] == 'JOIN':
+            # Process JOIN clause
+            result['join'] = {
+                'table': p[i+1],
+                'condition': p[i+3]
+            }
+            i += 4  # Move past JOIN ID ON join_condition
+        elif p[i] == 'WHERE':
+            # Process WHERE clause
+            result['where'] = p[i+1]
+            i += 2
+        elif p[i] == 'ORDER' and i+1 < len(p) and p[i+1] == 'BY':
+            # Process ORDER BY clause
+            result['order_by'] = p[i+2]
+            i += 3
+        elif p[i] == 'GROUP' and i+1 < len(p) and p[i+1] == 'BY':
+            # Process GROUP BY clause
+            result['group_by'] = p[i+2]
+            i += 3
+        elif p[i] == 'HAVING':
+            # Process HAVING clause
+            result['having'] = p[i+1]
+            i += 2
+        elif p[i] == 'LIMIT':
+            # Process LIMIT clause
+            result['limit'] = p[i+1]
+            i += 2
+            # Check if there's an OFFSET
+            if i < len(p) and p[i] == 'OFFSET':
+                result['offset'] = p[i+1]
+                i += 2
+        else:
+            # Unknown clause, skip it
+            i += 1
     
     p[0] = result
+
+def p_table_reference(parser, p):
+    '''table_reference : ID
+                       | ID ID
+                       | ID AS ID'''
+    if len(p) == 2:
+        p[0] = p[1]  # Simple table reference
+    elif len(p) == 3:
+        p[0] = {'name': p[1], 'alias': p[2]}  # Table with alias (implicit)
+    else:
+        p[0] = {'name': p[1], 'alias': p[3]}  # Table with alias (explicit)
+
+def p_where_clause(parser, p):
+    'where_clause : WHERE condition'
+    p[0] = p[2]
+
+def p_group_by_clause(parser, p):
+    '''group_by_clause : GROUP BY column_list
+                       | GROUP BY column_list HAVING condition'''
+    if len(p) == 4:
+        p[0] = p[3]
+    else:
+        p[0] = {
+            'columns': p[3],
+            'having': p[5]
+        }
+
+def p_order_by_clause(parser, p):
+    'order_by_clause : ORDER BY order_list'
+    p[0] = p[3]
+
+def p_limit_clause(parser, p):
+    '''limit_clause : LIMIT NUMBER
+                    | LIMIT NUMBER OFFSET NUMBER'''
+    if len(p) == 3:
+        p[0] = p[2]
+    else:
+        p[0] = {
+            'limit': p[2],
+            'offset': p[4]
+        }
+
+def p_join_clause(parser, p):
+    'join_clause : JOIN ID ON join_condition'
+    p[0] = {
+        'table': p[2],
+        'condition': p[4]
+    }
 
 def p_join_condition(parser, p):
     'join_condition : ID DOT ID EQUALS ID DOT ID'
@@ -143,12 +235,60 @@ def p_projection(parser, p):
         p[0] = {'type': 'columns', 'columns': p[1]}
 
 def p_column_list(parser, p):
-    '''column_list : ID
-                   | ID COMMA column_list'''
+    '''column_list : column_item
+                   | column_item COMMA column_list'''
     if len(p) == 2:
-        p[0] = [{'type': 'column', 'name': p[1]}]
+        p[0] = [p[1]]
     else:
-        p[0] = [{'type': 'column', 'name': p[1]}] + p[3]
+        p[0] = [p[1]] + p[3]
+
+def p_column_item(parser, p):
+    '''column_item : ID
+                   | ID DOT ID
+                   | ID AS ID
+                   | ID DOT ID AS ID
+                   | aggregate_function
+                   | aggregate_function AS ID'''
+    if len(p) == 2:
+        # Simple column: name
+        p[0] = {'type': 'column', 'name': p[1]}
+    elif len(p) == 4:
+        if p[2] == '.':
+            # Qualified column: table.column
+            p[0] = {'type': 'column', 'name': f"{p[1]}.{p[3]}"}
+        elif p[2].upper() == 'AS':
+            # Aliased column: column AS alias
+            p[0] = {'type': 'column', 'name': p[1], 'alias': p[3]}
+        else:
+            # Aggregate function
+            p[0] = p[1]
+    elif len(p) == 6:
+        # Qualified and aliased column: table.column AS alias
+        p[0] = {'type': 'column', 'name': f"{p[1]}.{p[3]}", 'alias': p[5]}
+    else:
+        # Aggregate function with alias
+        agg = p[1]
+        agg['alias'] = p[3]
+        p[0] = agg
+
+def p_aggregate_function(parser, p):
+    '''aggregate_function : COUNT LPAREN TIMES RPAREN
+                          | COUNT LPAREN ID RPAREN
+                          | AVG LPAREN ID RPAREN
+                          | SUM LPAREN ID RPAREN
+                          | MAX LPAREN ID RPAREN
+                          | MIN LPAREN ID RPAREN'''
+    func_name = p[1].upper()
+    arg = p[3]
+    
+    if arg == '*' and func_name == 'COUNT':
+        arg = '*'
+    
+    p[0] = {
+        'type': 'aggregation',
+        'function': func_name,
+        'argument': arg
+    }
 
 def p_condition(parser, p):
     '''condition : ID EQUALS value
@@ -157,21 +297,82 @@ def p_condition(parser, p):
                  | ID GE value
                  | ID LE value
                  | ID NE value
+                 | ID DOT ID EQUALS value
+                 | ID DOT ID GT value
+                 | ID DOT ID LT value
+                 | ID DOT ID GE value
+                 | ID DOT ID LE value
+                 | ID DOT ID NE value
+                 | ID IN LPAREN subquery RPAREN
+                 | ID DOT ID IN LPAREN subquery RPAREN
                  | condition AND condition
-                 | condition OR condition'''
-    if p[2] in ('AND', 'OR'):
+                 | condition OR condition
+                 | LPAREN condition RPAREN'''
+    if len(p) == 2:
+        # Already processed condition (from subexpression)
+        p[0] = p[1]
+    elif p[1] == '(' and p[3] == ')':
+        # Parenthesized condition
+        p[0] = p[2]
+    elif p[2] in ('AND', 'OR'):
+        # Logical operators
         p[0] = {
             'type': p[2].lower(),
             'left': p[1],
             'right': p[3]
         }
-    else:
+    elif p[2] == 'IN' and p[3] == '(':
+        # IN subquery
+        p[0] = {
+            'type': 'in_subquery',
+            'column': {'type': 'column', 'name': p[1]},
+            'subquery': p[4]
+        }
+    elif len(p) == 6 and p[4] == '(':
+        # Qualified column IN subquery
+        p[0] = {
+            'type': 'in_subquery',
+            'column': {'type': 'column', 'name': f"{p[1]}.{p[3]}"},
+            'subquery': p[5]
+        }
+    elif len(p) == 4:
+        # Simple comparison
         p[0] = {
             'type': 'comparison',
             'left': {'type': 'column', 'name': p[1]},
             'operator': p[2],
             'right': p[3]
         }
+    else:
+        # Qualified column comparison
+        p[0] = {
+            'type': 'comparison',
+            'left': {'type': 'column', 'name': f"{p[1]}.{p[3]}"},
+            'operator': p[4],
+            'right': p[5]
+        }
+
+def p_subquery(parser, p):
+    '''subquery : SELECT projection FROM table_reference
+                | SELECT projection FROM table_reference where_clause'''
+    result = {
+        'type': 'SELECT',
+        'projection': p[2],
+        'table': p[4]
+    }
+    
+    if len(p) > 5:
+        result['where'] = p[5]
+    
+    p[0] = result
+
+def p_where_clause_opt(parser, p):
+    '''where_clause_opt : where_clause
+                        | '''
+    if len(p) == 2:
+        p[0] = p[1]
+    else:
+        p[0] = None
 
 def p_value(parser, p):
     '''value : NUMBER

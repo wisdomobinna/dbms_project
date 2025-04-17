@@ -46,13 +46,22 @@ class QueryOptimizer:
         
         # Optimize JOIN method selection
         if "join" in optimized_query and optimized_query["join"]:
+            # Handle the complex structure of multiple joins
+            # First, flatten the join structure if needed
+            flattened_joins = self._flatten_joins(optimized_query["join"])
+            optimized_query["join"] = flattened_joins
+            
+            # Now optimize each join in the flat list
             if isinstance(optimized_query["join"], list):
                 # Handle multiple joins
                 for i, join in enumerate(optimized_query["join"]):
+                    left_table = optimized_query["table"] if i == 0 else optimized_query["join"][i-1]["table"]
+                    right_table = join["table"]
+                    join_condition = join["condition"]
                     optimized_query["join"][i]["method"] = self._select_join_method(
-                        optimized_query["table"] if i == 0 else optimized_query["join"][i-1]["table"],
-                        join["table"],
-                        join["condition"]
+                        left_table,
+                        right_table,
+                        join_condition
                     )
             else:
                 # Handle single join
@@ -378,3 +387,31 @@ class QueryOptimizer:
         elif condition["type"] == "or":
             return f"({self._condition_to_string(condition['left'])}) OR ({self._condition_to_string(condition['right'])})"
         return str(condition)
+    
+    def _flatten_joins(self, joins):
+        """
+        Flatten a potentially nested join structure.
+        
+        Args:
+            joins: The join structure from the parsed query
+            
+        Returns:
+            list: A flattened list of joins
+        """
+        if not joins:
+            return joins
+            
+        if not isinstance(joins, list):
+            return [joins]
+            
+        result = []
+        
+        for item in joins:
+            if isinstance(item, dict):
+                # Simple join dict
+                result.append(item)
+            elif isinstance(item, list):
+                # Nested list of joins
+                result.extend(self._flatten_joins(item))
+                
+        return result

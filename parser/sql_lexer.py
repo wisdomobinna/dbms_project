@@ -15,7 +15,8 @@ class SQLLexer(object):
         'INTO', 'VALUES', 'DELETE', 'UPDATE', 'SET', 'DROP',
         'INDEX', 'ON', 'PRIMARY', 'KEY', 'INTEGER', 'STRING_TYPE',
         'AND', 'OR', 'ORDER', 'BY', 'HAVING', 'SHOW', 'DESCRIBE',
-        'ASC', 'DESC', 'TIMES'  # Added missing tokens
+        'ASC', 'DESC', 'TIMES', 'AS', 'JOIN', 'GROUP', 'LIMIT', 'OFFSET',
+        'COUNT', 'AVG', 'SUM', 'MAX', 'MIN', 'IN'  # Added additional features
     )
     
     # Regular expression rules for simple tokens
@@ -74,6 +75,9 @@ class SQLLexer(object):
             'KEY': 'KEY', 'INTEGER': 'INTEGER', 'STRING': 'STRING_TYPE',
             'AND': 'AND', 'OR': 'OR', 'ORDER': 'ORDER', 'BY': 'BY',
             'HAVING': 'HAVING', 'SHOW': 'SHOW', 'DESCRIBE': 'DESCRIBE',
-            'ASC': 'ASC', 'DESC': 'DESC'
+            'ASC': 'ASC', 'DESC': 'DESC', 'AS': 'AS', 'JOIN': 'JOIN',
+            'GROUP': 'GROUP', 'LIMIT': 'LIMIT', 'OFFSET': 'OFFSET',
+            'COUNT': 'COUNT', 'AVG': 'AVG', 'SUM': 'SUM', 'MAX': 'MAX',
+            'MIN': 'MIN', 'IN': 'IN'
         }
         self.lexer = lex.lex(module=self, **kwargs)
