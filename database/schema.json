@@ -7,6 +7,14 @@
     "professors": {
       "name": "professors",
       "record_count": 0
+    },
+    "buildings": {
+      "name": "buildings",
+      "record_count": 0
+    },
+    "classrooms": {
+      "name": "classrooms",
+      "record_count": 0
     }
   },
   "columns": {
@@ -43,6 +51,45 @@
         "type": "INTEGER",
         "primary_key": false
       }
+    ],
+    "buildings": [
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "primary_key": true
+      },
+      {
+        "name": "name",
+        "type": "STRING",
+        "primary_key": false
+      }
+    ],
+    "classrooms": [
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "primary_key": true
+      },
+      {
+        "name": "name",
+        "type": "STRING",
+        "primary_key": false
+      },
+      {
+        "name": "floor",
+        "type": "INTEGER",
+        "primary_key": false
+      },
+      {
+        "name": "room_number",
+        "type": "INTEGER",
+        "primary_key": false
+      },
+      {
+        "name": "building_id",
+        "type": "INTEGER",
+        "primary_key": false
+      }
     ]
   },
   "indexes": {
@@ -51,11 +98,26 @@
     ],
     "professors": [
       "id"
+    ],
+    "buildings": [
+      "id"
+    ],
+    "classrooms": [
+      "id"
     ]
   },
   "primary_keys": {
     "students": "id",
-    "professors": "id"
+    "professors": "id",
+    "buildings": "id",
+    "classrooms": "id"
   },
-  "foreign_keys": {}
+  "foreign_keys": {
+    "classrooms": {
+      "building_id": {
+        "table": "buildings",
+        "column": "id"
+      }
+    }
+  }
 }
