@@ -15,6 +15,10 @@
     "classrooms": {
       "name": "classrooms",
       "record_count": 0
+    },
+    "test": {
+      "name": "test",
+      "record_count": 0
     }
   },
   "columns": {
@@ -90,6 +94,18 @@
         "type": "INTEGER",
         "primary_key": false
       }
+    ],
+    "test": [
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "primary_key": true
+      },
+      {
+        "name": "name",
+        "type": "STRING",
+        "primary_key": false
+      }
     ]
   },
   "indexes": {
@@ -104,13 +120,17 @@
     ],
     "classrooms": [
       "id"
+    ],
+    "test": [
+      "id"
     ]
   },
   "primary_keys": {
     "students": "id",
     "professors": "id",
     "buildings": "id",
-    "classrooms": "id"
+    "classrooms": "id",
+    "test": "id"
   },
   "foreign_keys": {
     "classrooms": {
