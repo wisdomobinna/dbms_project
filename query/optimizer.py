@@ -248,12 +248,42 @@ class QueryOptimizer:
         
         # Table access
         table_name = query["table"]
-        record_count = self.schema_manager.get_record_count(table_name)
-        plan["table_access"] = {
-            "table": table_name,
-            "records": record_count,
-            "method": "full-scan"
-        }
+        
+        # Handle derived tables (subqueries in FROM)
+        if isinstance(table_name, dict) and table_name.get("type") == "derived_table":
+            # For derived tables, we use a fixed string identifier
+            plan["table_access"] = {
+                "table": "derived_table",
+                "records": 100,  # Default estimate for subquery
+                "method": "subquery"
+            }
+            record_count = 100  # Default estimate
+        else:
+            # For regular tables
+            if isinstance(table_name, dict) and "name" in table_name:
+                # Handle table with alias
+                record_table_name = table_name["name"]
+            else:
+                # Simple table name (ensure it's a string for hashtables)
+                record_table_name = str(table_name) if table_name is not None else "unknown"
+                
+            try:
+                # Ensure record_table_name is hashable (a string)
+                if isinstance(record_table_name, dict):
+                    # Fallback for unexpected dictionary
+                    record_count = 100
+                else:
+                    record_count = self.schema_manager.get_record_count(record_table_name)
+            except Exception as e:
+                # If table doesn't exist in schema (like for derived tables)
+                record_count = 100  # Default estimate
+                
+            plan["table_access"] = {
+                "table": record_table_name if not isinstance(table_name, dict) else table_name["name"],
+                "records": record_count,
+                "method": "full-scan"
+            }
+            
         plan["cost"] += record_count  # Each record costs 1 unit
         
         # Filter operation

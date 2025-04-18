@@ -119,6 +119,14 @@ class SchemaManager:
         if primary_key and primary_key not in column_names:
             raise SchemaError(f"Primary key '{primary_key}' must be one of the columns")
         
+        # Auto-increment columns must be INTEGER and primary key
+        for col in columns:
+            if col.get("auto_increment"):
+                if col["type"] != DataType.INTEGER:
+                    raise SchemaError(f"Auto-increment column '{col['name']}' must be of INTEGER type")
+                if not col.get("primary_key") and col["name"] != primary_key:
+                    raise SchemaError(f"Auto-increment column '{col['name']}' must be a PRIMARY KEY")
+        
         # Validate foreign keys
         if foreign_keys:
             for fk_col, fk_ref in foreign_keys.items():
@@ -307,14 +315,43 @@ class SchemaManager:
     
     def get_record_count(self, table_name):
         """Get the record count for a table."""
-        if self.table_exists(table_name):
-            return self.tables[table_name]["record_count"]
-        return 0
+        try:
+            # Handle possible dict or other unhashable type
+            if not isinstance(table_name, str):
+                if hasattr(table_name, 'name'):
+                    table_name = table_name.name
+                elif isinstance(table_name, dict) and 'name' in table_name:
+                    table_name = table_name['name']
+                else:
+                    # Couldn't find a valid table name
+                    return 0
+            
+            # Check if table exists in schema
+            if self.table_exists(table_name):
+                return self.tables[table_name]["record_count"]
+            return 0
+        except (TypeError, KeyError):
+            # Fallback for any unexpected errors
+            return 0
     
     # Helper methods
     def table_exists(self, table_name):
         """Check if a table exists."""
-        return table_name in self.tables
+        try:
+            # Handle possible dict or other unhashable type
+            if not isinstance(table_name, str):
+                if hasattr(table_name, 'name'):
+                    table_name = table_name.name
+                elif isinstance(table_name, dict) and 'name' in table_name:
+                    table_name = table_name['name']
+                else:
+                    # Couldn't find a valid table name
+                    return False
+            
+            return table_name in self.tables
+        except (TypeError, KeyError):
+            # Fallback for any unexpected errors
+            return False
     
     def column_exists(self, table_name, column_name):
         """Check if a column exists in a table."""
@@ -331,14 +368,76 @@ class SchemaManager:
         return column_name in self.indexes[table_name]
     
     def primary_key_exists(self, table_name, value):
-        """Check if a primary key value already exists in a table."""
-        # This would typically use an index lookup
-        return False  # Placeholder
+        """
+        Check if a primary key value already exists in a table.
+        
+        Args:
+            table_name (str): Name of the table
+            value: The primary key value to check
+            
+        Returns:
+            bool: True if the primary key value exists, False otherwise
+        """
+        pk_column = self.get_primary_key(table_name)
+        if not pk_column:
+            return False
+            
+        # Use the index manager to look up the value in the primary key index
+        if not hasattr(self, 'index_manager'):
+            # Lazy initialize the index manager if not already available
+            from storage.index.index_manager import IndexManager
+            self.index_manager = IndexManager(self.disk_manager)
+            
+        # Look up the value in the primary key index
+        if self.index_exists(table_name, pk_column):
+            record_ids = self.index_manager.lookup(table_name, pk_column, value)
+            return len(record_ids) > 0
+            
+        # Fall back to a table scan if no index exists
+        try:
+            records = self.disk_manager.read_table(table_name)
+            for record in records:
+                if not record.get("__deleted__", False) and record.get(pk_column) == value:
+                    return True
+            return False
+        except:
+            return False
     
     def foreign_key_exists(self, table_name, column_name, value):
-        """Check if a value exists in a referenced table's column."""
-        # This would typically use an index lookup
-        return True  # Placeholder for now
+        """
+        Check if a value exists in a referenced table's column.
+        
+        Args:
+            table_name (str): Name of the referenced table
+            column_name (str): Name of the referenced column
+            value: The value to check
+            
+        Returns:
+            bool: True if the value exists in the referenced column, False otherwise
+        """
+        if not self.table_exists(table_name) or not self.column_exists(table_name, column_name):
+            return False
+            
+        # Use the index manager to look up the value in the referenced column
+        if not hasattr(self, 'index_manager'):
+            # Lazy initialize the index manager if not already available
+            from storage.index.index_manager import IndexManager
+            self.index_manager = IndexManager(self.disk_manager)
+            
+        # Look up the value in the index if it exists
+        if self.index_exists(table_name, column_name):
+            record_ids = self.index_manager.lookup(table_name, column_name, value)
+            return len(record_ids) > 0
+            
+        # Fall back to a table scan if no index exists
+        try:
+            records = self.disk_manager.read_table(table_name)
+            for record in records:
+                if not record.get("__deleted__", False) and record.get(column_name) == value:
+                    return True
+            return False
+        except:
+            return False
     
     def get_tables(self):
         """Get all table names."""

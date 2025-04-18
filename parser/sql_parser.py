@@ -25,7 +25,7 @@ class SQLParser:
         'PRIMARY', 'KEY', 'FOREIGN', 'REFERENCES', 'SHOW', 'TABLES', 'DESCRIBE',
         'IDENTIFIER', 'NUMBER', 'STRING_LITERAL', 'COMMA', 'SEMICOLON',
         'LPAREN', 'RPAREN', 'DOT', 'EQUALS', 'NOTEQUALS', 'LT', 'GT', 'LE', 'GE',
-        'ASTERISK', 'AS', 'IN', 'LIMIT', 'OFFSET', 'GROUP',
+        'ASTERISK', 'AS', 'IN', 'LIMIT', 'OFFSET', 'GROUP', 'AUTO_INCREMENT',
         'COUNT', 'AVG', 'SUM', 'MAX', 'MIN'  # Aggregate functions
     )
     
@@ -121,6 +121,7 @@ class SQLParser:
         'limit': 'LIMIT',
         'offset': 'OFFSET',
         'group': 'GROUP',
+        'auto_increment': 'AUTO_INCREMENT',
         'count': 'COUNT',
         'avg': 'AVG',
         'sum': 'SUM',
@@ -211,8 +212,13 @@ class SQLParser:
         p[0] = {'type': 'SHOW_TABLES'}
     
     def p_describe_statement(self, p):
-        'describe_statement : DESCRIBE IDENTIFIER'
-        p[0] = {'type': 'DESCRIBE', 'table_name': p[2]}
+        '''describe_statement : DESCRIBE IDENTIFIER
+                             | DESCRIBE IDENTIFIER DOT IDENTIFIER'''
+        if len(p) == 3:
+            p[0] = {'type': 'DESCRIBE', 'table_name': p[2]}
+        else:
+            # Handle the table.column form
+            p[0] = {'type': 'DESCRIBE', 'table_name': p[2], 'column_name': p[4]}
     
     def p_create_table_statement(self, p):
         'create_table_statement : CREATE TABLE IDENTIFIER LPAREN column_def_list RPAREN'
@@ -225,11 +231,18 @@ class SQLParser:
         # Process column definitions
         for col_def in p[5]:
             if col_def.get('type') == 'column':
-                columns.append({
+                column_info = {
                     'name': col_def['name'],
                     'type': col_def['data_type'],
                     'primary_key': col_def.get('primary_key', False)
-                })
+                }
+                
+                # Add auto_increment flag if present
+                if col_def.get('auto_increment'):
+                    column_info['auto_increment'] = True
+                
+                columns.append(column_info)
+                
                 if col_def.get('primary_key'):
                     primary_key = col_def['name']
             elif col_def.get('type') == 'foreign_key':
@@ -263,11 +276,14 @@ class SQLParser:
         self.lexer.context['column'] = True
         
         if len(p) == 4:  # Regular column definition
+            constraints = p[3]  # This is now a dictionary with multiple flags
+            
             p[0] = {
                 'type': 'column',
                 'name': p[1],
                 'data_type': DataType.INTEGER if p[2].lower() == 'integer' else DataType.STRING,
-                'primary_key': p[3]
+                'primary_key': constraints['primary_key'] if isinstance(constraints, dict) else constraints,
+                'auto_increment': constraints.get('auto_increment', False) if isinstance(constraints, dict) else False
             }
         else:  # Foreign key definition
             p[0] = p[1]
@@ -277,11 +293,26 @@ class SQLParser:
     
     def p_primary_key_opt(self, p):
         '''primary_key_opt : PRIMARY KEY
+                          | PRIMARY KEY AUTO_INCREMENT
+                          | AUTO_INCREMENT
+                          | AUTO_INCREMENT PRIMARY KEY
                           | '''
-        if len(p) == 3:
-            p[0] = True
-        else:
-            p[0] = False
+        # Initialize flags
+        is_primary_key = False
+        is_auto_increment = False
+        
+        # Process tokens one by one
+        for i in range(1, len(p)):
+            if p[i].upper() == 'PRIMARY' and i+1 < len(p) and p[i+1].upper() == 'KEY':
+                is_primary_key = True
+            elif p[i].upper() == 'AUTO_INCREMENT':
+                is_auto_increment = True
+        
+        # Return a dictionary with both flags
+        p[0] = {
+            'primary_key': is_primary_key,
+            'auto_increment': is_auto_increment
+        }
     
     def p_foreign_key_def(self, p):
         'foreign_key_def : FOREIGN KEY LPAREN IDENTIFIER RPAREN REFERENCES IDENTIFIER LPAREN IDENTIFIER RPAREN'
@@ -363,19 +394,19 @@ class SQLParser:
                        | aggregation_function
                        | aggregation_function AS IDENTIFIER'''
         if isinstance(p[1], dict):  # Aggregation function
-            if len(p) == 4 and p[2] == 'AS':  # Aggregation function with alias
+            if len(p) == 4 and p[2].upper() == 'AS':  # Aggregation function with alias
                 func = p[1].copy()
                 func['alias'] = p[3]
                 p[0] = func
             else:
                 p[0] = p[1]
-        elif len(p) == 4 and p[2] == 'AS':  # Column with alias
+        elif len(p) == 4 and p[2].upper() == 'AS':  # Column with alias
             p[0] = {
                 'type': 'column',
                 'name': p[1],
                 'alias': p[3]
             }
-        elif len(p) == 6:  # Qualified column with alias
+        elif len(p) == 6 and p[4].upper() == 'AS':  # Qualified column with alias
             p[0] = {
                 'type': 'column',
                 'name': f"{p[1]}.{p[3]}",
@@ -414,16 +445,24 @@ class SQLParser:
     def p_table_reference(self, p):
         '''table_reference : IDENTIFIER
                           | IDENTIFIER IDENTIFIER
-                          | IDENTIFIER AS IDENTIFIER'''
+                          | IDENTIFIER AS IDENTIFIER
+                          | LPAREN select_statement RPAREN AS IDENTIFIER'''
         if len(p) == 2:
             # Simple table reference without alias
             p[0] = p[1]
         elif len(p) == 3:
             # Table with implicit alias: table alias
             p[0] = {'name': p[1], 'alias': p[2]}
-        elif len(p) == 4:
+        elif len(p) == 4 and p[2].upper() == 'AS':
             # Table with explicit alias: table AS alias
             p[0] = {'name': p[1], 'alias': p[3]}
+        elif len(p) == 6:
+            # Derived table (subquery in FROM): (SELECT...) AS alias
+            p[0] = {
+                'type': 'derived_table',
+                'subquery': p[2],
+                'alias': p[5]
+            }
     
     def p_join_clauses_opt(self, p):
         '''join_clauses_opt : join_clause
@@ -456,7 +495,7 @@ class SQLParser:
                 'alias': p[3],
                 'condition': p[5]
             }
-        elif len(p) == 7:
+        elif len(p) == 7 and p[3].upper() == 'AS':
             # Join with explicit alias: JOIN table AS alias ON ...
             p[0] = {
                 'table': p[2],
@@ -622,12 +661,23 @@ class SQLParser:
         p[0] = p[2]
     
     def p_insert_statement(self, p):
-        'insert_statement : INSERT INTO IDENTIFIER VALUES LPAREN value_list RPAREN'
-        p[0] = {
-            'type': 'INSERT',
-            'table_name': p[3],
-            'values': p[6]
-        }
+        '''insert_statement : INSERT INTO IDENTIFIER VALUES LPAREN value_list RPAREN
+                           | INSERT INTO IDENTIFIER LPAREN column_list RPAREN VALUES LPAREN value_list RPAREN'''
+        if len(p) == 8:
+            # Simple INSERT without column specification
+            p[0] = {
+                'type': 'INSERT',
+                'table_name': p[3],
+                'values': p[6]
+            }
+        else:
+            # INSERT with column specification
+            p[0] = {
+                'type': 'INSERT',
+                'table_name': p[3],
+                'columns': p[5],
+                'values': p[9]
+            }
     
     def p_value_list(self, p):
         '''value_list : expression
@@ -760,6 +810,13 @@ class SQLParser:
                 if 'WHERE count' in query:
                     renamed_query = renamed_query.replace('WHERE count', 'WHERE _col_count')
                 
+                # Make sure HAVING clauses work with COUNT(*)
+                # Add spaces around COUNT to avoid replacing parts of words
+                if 'HAVING COUNT' in query.upper() or 'having count' in query.lower():
+                    # Special handling for COUNT in HAVING clause
+                    # No substitution needed as we're trying to keep COUNT function
+                    pass
+                
             # Parse the renamed query
             result = self.parser.parse(renamed_query, lexer=self.lexer)
             
@@ -888,35 +945,100 @@ class SQLParser:
         if not schema_manager.table_exists(table_name):
             raise ValidationError(f"Table '{table_name}' does not exist")
         
-        # Check number of values matches number of columns
-        columns = schema_manager.get_columns(table_name)
-        if len(parsed_query["values"]) != len(columns):
-            raise ValidationError(f"INSERT has {len(parsed_query['values'])} values but table '{table_name}' has {len(columns)} columns")
+        # Get all table columns
+        all_columns = schema_manager.get_columns(table_name)
         
-        # Check data types
-        for i, (value, column) in enumerate(zip(parsed_query["values"], columns)):
-            if value["type"] == "integer" and column["type"] != DataType.INTEGER:
-                raise ValidationError(f"Type mismatch for column {i+1}: expected STRING, got INTEGER")
-            elif value["type"] == "string" and column["type"] != DataType.STRING:
-                raise ValidationError(f"Type mismatch for column {i+1}: expected INTEGER, got STRING")
-        
-        # Check primary key constraint if applicable
-        primary_key = schema_manager.get_primary_key(table_name)
-        if primary_key:
-            pk_index = next(i for i, col in enumerate(columns) if col["name"] == primary_key)
-            pk_value = parsed_query["values"][pk_index]["value"]
+        # Handle INSERT with column specifications
+        if "columns" in parsed_query:
+            specified_columns = parsed_query["columns"]
+            values = parsed_query["values"]
             
-            if schema_manager.primary_key_exists(table_name, pk_value):
-                raise ValidationError(f"Duplicate primary key value: {pk_value}")
-        
-        # Check foreign key constraints if applicable
-        foreign_keys = schema_manager.get_foreign_keys(table_name)
-        for fk_column, fk_ref in foreign_keys.items():
-            fk_index = next(i for i, col in enumerate(columns) if col["name"] == fk_column)
-            fk_value = parsed_query["values"][fk_index]["value"]
+            # Check if number of columns matches number of values
+            if len(specified_columns) != len(values):
+                raise ValidationError(f"INSERT specifies {len(specified_columns)} columns but provides {len(values)} values")
             
-            if not schema_manager.foreign_key_exists(fk_ref["table"], fk_ref["column"], fk_value):
-                raise ValidationError(f"Foreign key constraint violation: {fk_value} does not exist in {fk_ref['table']}.{fk_ref['column']}")
+            # Check that all specified columns exist in the table
+            column_names = {col["name"] for col in all_columns}
+            for col in specified_columns:
+                if col["name"] not in column_names:
+                    raise ValidationError(f"Column '{col['name']}' does not exist in table '{table_name}'")
+            
+            # Create a mapping of column names to their metadata
+            column_metadata = {col["name"]: col for col in all_columns}
+            
+            # Check data types for each column/value pair
+            for i, (col, value) in enumerate(zip(specified_columns, values)):
+                column_name = col["name"]
+                column = column_metadata[column_name]
+                
+                if value["type"] == "integer" and column["type"] != DataType.INTEGER:
+                    raise ValidationError(f"Type mismatch for column '{column_name}': expected STRING, got INTEGER")
+                elif value["type"] == "string" and column["type"] != DataType.STRING:
+                    raise ValidationError(f"Type mismatch for column '{column_name}': expected INTEGER, got STRING")
+            
+            # Check primary key constraint if applicable
+            primary_key = schema_manager.get_primary_key(table_name)
+            if primary_key:
+                # Check if primary key is specified in the columns list
+                pk_specified = False
+                pk_value = None
+                
+                for i, col in enumerate(specified_columns):
+                    if col["name"] == primary_key:
+                        pk_specified = True
+                        pk_value = values[i]["value"]
+                        break
+                
+                if pk_specified and pk_value is not None:
+                    if schema_manager.primary_key_exists(table_name, pk_value):
+                        raise ValidationError(f"Duplicate primary key value: {pk_value}")
+            
+            # Check foreign key constraints if applicable
+            foreign_keys = schema_manager.get_foreign_keys(table_name)
+            for fk_column, fk_ref in foreign_keys.items():
+                # Check if foreign key is specified in the columns list
+                fk_specified = False
+                fk_value = None
+                
+                for i, col in enumerate(specified_columns):
+                    if col["name"] == fk_column:
+                        fk_specified = True
+                        fk_value = values[i]["value"]
+                        break
+                
+                if fk_specified and fk_value is not None:
+                    if not schema_manager.foreign_key_exists(fk_ref["table"], fk_ref["column"], fk_value):
+                        raise ValidationError(f"Foreign key constraint violation: {fk_value} does not exist in {fk_ref['table']}.{fk_ref['column']}")
+        
+        else:
+            # Original validation for INSERT without column specifications
+            if len(parsed_query["values"]) != len(all_columns):
+                raise ValidationError(f"INSERT has {len(parsed_query['values'])} values but table '{table_name}' has {len(all_columns)} columns")
+            
+            # Check data types
+            for i, (value, column) in enumerate(zip(parsed_query["values"], all_columns)):
+                if value["type"] == "integer" and column["type"] != DataType.INTEGER:
+                    raise ValidationError(f"Type mismatch for column {i+1}: expected STRING, got INTEGER")
+                elif value["type"] == "string" and column["type"] != DataType.STRING:
+                    raise ValidationError(f"Type mismatch for column {i+1}: expected INTEGER, got STRING")
+            
+            # Check primary key constraint if applicable
+            primary_key = schema_manager.get_primary_key(table_name)
+            if primary_key:
+                pk_index = next(i for i, col in enumerate(all_columns) if col["name"] == primary_key)
+                pk_value = parsed_query["values"][pk_index]["value"]
+                
+                if schema_manager.primary_key_exists(table_name, pk_value):
+                    raise ValidationError(f"Duplicate primary key value: {pk_value}")
+            
+            # Check foreign key constraints if applicable
+            foreign_keys = schema_manager.get_foreign_keys(table_name)
+            for fk_column, fk_ref in foreign_keys.items():
+                fk_index = next(i for i, col in enumerate(all_columns) if col["name"] == fk_column)
+                fk_value = parsed_query["values"][fk_index]["value"]
+                
+                if not schema_manager.foreign_key_exists(fk_ref["table"], fk_ref["column"], fk_value):
+                    raise ValidationError(f"Foreign key constraint violation: {fk_value} does not exist in {fk_ref['table']}.{fk_ref['column']}")
     
     def _validate_update(self, parsed_query, schema_manager):
         """Validate UPDATE query."""

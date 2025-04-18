@@ -31,11 +31,17 @@ def p_create_table_statement(parser, p):
         if 'foreign_key' in col_def:
             foreign_keys[col_def['name']] = col_def['foreign_key']
         
-        columns.append({
+        column_def = {
             'name': col_def['name'],
             'type': col_def['type'],
             'primary_key': col_def.get('primary_key', False)
-        })
+        }
+        
+        # Include auto_increment attribute if present
+        if col_def.get('auto_increment'):
+            column_def['auto_increment'] = True
+            
+        columns.append(column_def)
     
     p[0] = {
         'type': 'CREATE_TABLE',
@@ -56,14 +62,26 @@ def p_column_def_list(parser, p):
 def p_column_def(parser, p):
     '''column_def : ID INTEGER
                   | ID INTEGER PRIMARY KEY
+                  | ID INTEGER AUTO_INCREMENT
+                  | ID INTEGER PRIMARY KEY AUTO_INCREMENT
+                  | ID INTEGER AUTO_INCREMENT PRIMARY KEY
                   | ID VARCHAR LPAREN NUMBER RPAREN'''
     column_def = {
         'name': p[1],
         'type': DataType.INTEGER if p[2] == 'INTEGER' else DataType.STRING
     }
     
-    if len(p) > 3 and p[3] == 'PRIMARY' and p[4] == 'KEY':
-        column_def['primary_key'] = True
+    # Process options - they can appear in any order
+    has_primary_key = False
+    has_auto_increment = False
+    
+    for i in range(3, len(p)):
+        if p[i] == 'PRIMARY' and i+1 < len(p) and p[i+1] == 'KEY':
+            column_def['primary_key'] = True
+            has_primary_key = True
+        elif p[i] == 'AUTO_INCREMENT':
+            column_def['auto_increment'] = True
+            has_auto_increment = True
     
     p[0] = column_def
 
@@ -403,12 +421,23 @@ def p_order_item(parser, p):
         p[0] = {'column': p[1], 'direction': p[2]}
 
 def p_insert_statement(parser, p):
-    'insert_statement : INSERT INTO ID VALUES LPAREN value_list RPAREN'
-    p[0] = {
-        'type': 'INSERT',
-        'table_name': p[3],
-        'values': p[6]
-    }
+    '''insert_statement : INSERT INTO ID VALUES LPAREN value_list RPAREN
+                       | INSERT INTO ID LPAREN column_list RPAREN VALUES LPAREN value_list RPAREN'''
+    if len(p) == 8:
+        # Simple INSERT without column specification
+        p[0] = {
+            'type': 'INSERT',
+            'table_name': p[3],
+            'values': p[6]
+        }
+    else:
+        # INSERT with column specification
+        p[0] = {
+            'type': 'INSERT',
+            'table_name': p[3],
+            'columns': p[5],
+            'values': p[9]
+        }
 
 def p_value_list(parser, p):
     '''value_list : value

@@ -109,8 +109,8 @@ class TestDBMS:
  
         # Execute the query
         result = self.executor.execute(parsed_query)
-        assert "John Doe" in result
-        assert "Jane Smith" in result
+        assert self._check_result_contains(result, "John Doe")
+        assert self._check_result_contains(result, "Jane Smith")
     
     def test_select_with_where(self):
         """Test SELECT with WHERE clause."""
@@ -128,8 +128,8 @@ class TestDBMS:
         
         # Execute the query
         result = self.executor.execute(parsed_query)
-        assert "Jane Smith" in result
-        assert "John Doe" not in result
+        assert self._check_result_contains(result, "Jane Smith")
+        assert not self._check_result_contains(result, "John Doe")
     
     def test_select_with_order_by(self):
         """Test SELECT with ORDER BY clause."""
@@ -152,9 +152,9 @@ class TestDBMS:
         result = self.executor.execute(parsed_query)
         
         # The result should list Jane first (age 22), then John (age 20), then Alice (age 19)
-        # Check if the order is correct by finding positions in the result string
-        assert result.find("Jane Smith") < result.find("John Doe")
-        assert result.find("John Doe") < result.find("Alice Johnson")
+        # Check if the order is correct by finding positions in the result
+        assert self._check_result_order(result, "Jane Smith", "John Doe")
+        assert self._check_result_order(result, "John Doe", "Alice Johnson")
     
     def test_update(self):
         """Test UPDATE statement."""
@@ -172,13 +172,13 @@ class TestDBMS:
         # Execute the query
         result = self.executor.execute(parsed_query)
         # Use a more flexible assertion that matches the actual format
-        assert "record(s) updated in 'students'" in result
+        assert "record(s) updated in 'students'" in str(result)
         
         # Verify the update
         query = "SELECT * FROM students WHERE id = 1"
         parsed_query = self.parser.parse(query)
         result = self.executor.execute(parsed_query)
-        assert "21" in result
+        assert self._check_result_contains(result, "21")
     
     def test_delete(self):
         """Test DELETE statement."""
@@ -484,3 +484,23 @@ class TestDBMS:
         for query in queries:
             parsed_query = self.parser.parse(query)
             self.executor.execute(parsed_query)
+            
+    def _check_result_contains(self, result, value):
+        """Check if a result contains a value, handling both string and dict formats."""
+        if isinstance(result, dict):
+            if 'rows' in result:
+                rows_str = str(result['rows'])
+                return value in rows_str
+            return False
+        else:
+            return value in result
+            
+    def _check_result_order(self, result, value1, value2):
+        """Check if value1 appears before value2 in result, handling both formats."""
+        if isinstance(result, dict):
+            if 'rows' in result:
+                rows_str = str(result['rows'])
+                return rows_str.find(value1) < rows_str.find(value2)
+            return False
+        else:
+            return result.find(value1) < result.find(value2)

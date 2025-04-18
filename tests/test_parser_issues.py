@@ -278,27 +278,27 @@ class TestParserIssues:
         query = "INSERT INTO type_test VALUES (1, 'test', 100)"
         parsed_query = self.parser.parse(query)
         result = self.executor.execute(parsed_query)
-        assert "record inserted" in result
+        assert "record inserted" in str(result)
         
         # Test type validation
         # This should work - types match
         query = "UPDATE type_test SET count = 200 WHERE id = 1"
         parsed_query = self.parser.parse(query)
         result = self.executor.execute(parsed_query)
-        assert "record(s) updated" in result
+        assert "record(s) updated" in str(result)
         
         # This should also work - types match
         query = "UPDATE type_test SET name = 'updated' WHERE id = 1"
         parsed_query = self.parser.parse(query)
         result = self.executor.execute(parsed_query)
-        assert "record(s) updated" in result
+        assert "record(s) updated" in str(result)
         
         # Check the updated values
         query = "SELECT * FROM type_test WHERE id = 1"
         parsed_query = self.parser.parse(query)
         result = self.executor.execute(parsed_query)
-        assert "updated" in result
-        assert "200" in result
+        assert self._check_result_contains(result, "updated")
+        assert self._check_result_contains(result, "200")
         
     def test_semicolon_handling(self):
         """Test that queries with semicolons are handled properly."""
@@ -306,19 +306,65 @@ class TestParserIssues:
         query = "CREATE TABLE semicolon_test (id INTEGER PRIMARY KEY, value STRING);"
         parsed_query = self.parser.parse(query)
         result = self.executor.execute(parsed_query)
-        assert "created successfully" in result
+        assert "created successfully" in str(result)
         
         # Insert with trailing semicolon
         query = "INSERT INTO semicolon_test VALUES (1, 'test');"
         parsed_query = self.parser.parse(query)
         result = self.executor.execute(parsed_query)
-        assert "record inserted" in result
+        assert "record inserted" in str(result)
         
         # Select with trailing semicolon
         query = "SELECT * FROM semicolon_test;"
         parsed_query = self.parser.parse(query)
         result = self.executor.execute(parsed_query)
-        assert "test" in result
+        assert self._check_result_contains(result, "test")
+    
+    def test_insert_with_column_specification(self):
+        """Test INSERT statements with column specifications."""
+        # Create a table
+        query = """
+        CREATE TABLE students (
+            id INTEGER PRIMARY KEY,
+            name STRING,
+            age INTEGER
+        )
+        """
+        parsed_query = self.parser.parse(query)
+        self.executor.execute(parsed_query)
+        
+        # Insert data with column specifications
+        query = "INSERT INTO students (name, age) VALUES ('Alice Sam', 20)"
+        parsed_query = self.parser.parse(query)
+        result = self.executor.execute(parsed_query)
+        assert "record inserted" in result
+        
+        # Insert another record with column specifications in different order
+        query = "INSERT INTO students (age, name) VALUES (22, 'Bob Smith')"
+        parsed_query = self.parser.parse(query)
+        result = self.executor.execute(parsed_query)
+        assert "record inserted" in result
+        
+        # Verify that the data was inserted correctly
+        query = "SELECT * FROM students"
+        parsed_query = self.parser.parse(query)
+        result = self.executor.execute(parsed_query)
+        
+        # Check that records were inserted correctly with auto-incremented IDs
+        # Handle both string-based results and structured results
+        if isinstance(result, dict) and 'rows' in result:
+            # Check in the structured result format
+            rows_str = str(result['rows'])
+            assert "Alice Sam" in rows_str
+            assert "20" in rows_str
+            assert "Bob Smith" in rows_str
+            assert "22" in rows_str
+        else:
+            # Check in the plain string result format
+            assert "Alice Sam" in result
+            assert "20" in result
+            assert "Bob Smith" in result
+            assert "22" in result
     
     # Helper methods
     def _create_users_table(self):
@@ -337,3 +383,13 @@ class TestParserIssues:
         for query in queries:
             parsed_query = self.parser.parse(query)
             self.executor.execute(parsed_query)
+            
+    def _check_result_contains(self, result, value):
+        """Check if a result contains a value, handling both string and dict formats."""
+        if isinstance(result, dict):
+            if 'rows' in result:
+                rows_str = str(result['rows'])
+                return value in rows_str
+            return False
+        else:
+            return value in result

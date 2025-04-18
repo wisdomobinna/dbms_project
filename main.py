@@ -11,12 +11,17 @@ import argparse
 import readline  # For command history and editing capabilities
 from colorama import init, Fore, Style  # For colored output
 
+# Fix imports to use relative imports without package
+# Add the project root to the Python path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 from parser.sql_parser import SQLParser
 from catalog.schema_manager import SchemaManager
 from storage.disk_manager import DiskManager
 from storage.index.index_manager import IndexManager
 from query.optimizer import QueryOptimizer
 from execution.executor import Executor
+from common.types import DataType
 
 # Initialize colorama
 init()
@@ -161,13 +166,37 @@ class DBMSApplication:
         try:
             while True:
                 try:
-                    query = input(f"{Fore.CYAN}dbms>{Style.RESET_ALL} ")
-                    readline.add_history(query)
+                    # Collect multiline input
+                    query_lines = []
+                    prompt = f"{Fore.CYAN}dbms>{Style.RESET_ALL} "
+                    continuation_prompt = f"{Fore.CYAN}...>{Style.RESET_ALL} "
                     
-                    if query.lower() in ('exit', 'quit'):
+                    first_line = input(prompt)
+                    
+                    # Check for exit/quit immediately
+                    if first_line.lower().strip() in ('exit', 'quit'):
                         print(f"{Fore.YELLOW}Goodbye!{Style.RESET_ALL}")
-                        break
-                    elif query.lower() == 'help':
+                        sys.exit(0)
+                        
+                    if first_line.strip():
+                        query_lines.append(first_line)
+                        
+                        # Continue collecting lines until empty line or semicolon at end
+                        while True:
+                            line = input(continuation_prompt)
+                            if not line.strip():
+                                break
+                            
+                            query_lines.append(line)
+                            if line.strip().endswith(';'):
+                                break
+                    
+                    query = '\n'.join(query_lines)
+                    
+                    if query:
+                        readline.add_history(query)
+                    
+                    if query.lower() == 'help':
                         self._print_help()
                     elif query.lower() == 'tables':
                         # Shortcut to list tables
@@ -184,6 +213,9 @@ class DBMSApplication:
                         # Run script command
                         script_path = query[4:].strip()
                         self.run_script(script_path)
+                    elif query.lower().startswith('copy '):
+                        # Handle COPY command for bulk data import
+                        self._execute_copy_command(query)
                     elif query.strip():
                         result, execution_time = self.run_query(query)
                         print(f"\n{Fore.GREEN}Result:{Style.RESET_ALL}")
@@ -202,6 +234,107 @@ class DBMSApplication:
         finally:
             # Save command history
             readline.write_history_file(histfile)
+            
+    def _execute_copy_command(self, command):
+        """
+        Execute a COPY command for bulk data import.
+        
+        Syntax: COPY table_name FROM 'filename' [DELIMITER 'delimiter'] [CSV]
+        
+        Args:
+            command (str): The COPY command to execute
+        """
+        import csv
+        import re
+        
+        # Parse the COPY command
+        try:
+            # Extract table name and filename using regex
+            copy_match = re.match(r'COPY\s+(\w+)\s+FROM\s+[\'"]([^\'"]+)[\'"]', command, re.IGNORECASE)
+            if not copy_match:
+                raise ValueError("Invalid COPY command syntax. Expected: COPY table FROM 'filename' [DELIMITER 'delimiter'] [CSV]")
+                
+            table_name = copy_match.group(1)
+            filename = copy_match.group(2)
+            
+            # Check if table exists
+            if not self.schema_manager.table_exists(table_name):
+                raise ValueError(f"Table '{table_name}' does not exist")
+                
+            # Get delimiter (default is comma)
+            delimiter = ','
+            delimiter_match = re.search(r'DELIMITER\s+[\'"]([^\'"]+)[\'"]', command, re.IGNORECASE)
+            if delimiter_match:
+                delimiter = delimiter_match.group(1)
+                
+            # Check if CSV format
+            is_csv = 'CSV' in command.upper()
+            
+            # Get column definitions
+            columns = self.schema_manager.get_columns(table_name)
+            
+            # Read the file and process records
+            with open(filename, 'r') as f:
+                if is_csv:
+                    reader = csv.reader(f, delimiter=delimiter)
+                    rows = list(reader)
+                else:
+                    # Simple text format with delimiter
+                    rows = []
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            rows.append(line.split(delimiter))
+            
+            # Process and insert records
+            records = []
+            row_count = 0
+            
+            for row_index, row in enumerate(rows):
+                if len(row) != len(columns):
+                    print(f"{Fore.YELLOW}Warning: Row {row_index+1} has {len(row)} fields but table has {len(columns)} columns. Skipping.{Style.RESET_ALL}")
+                    continue
+                    
+                record = {}
+                values = []
+                
+                # Process each field based on column type
+                for i, (value, column) in enumerate(zip(row, columns)):
+                    col_name = column["name"]
+                    value = value.strip()
+                    
+                    # Handle type conversion
+                    if column["type"] == DataType.INTEGER:
+                        try:
+                            typed_value = int(value)
+                            record[col_name] = typed_value
+                            values.append({"type": "integer", "value": typed_value})
+                        except ValueError:
+                            print(f"{Fore.YELLOW}Warning: Invalid integer value '{value}' for column '{col_name}' in row {row_index+1}. Skipping row.{Style.RESET_ALL}")
+                            break
+                    else:  # STRING type
+                        record[col_name] = value
+                        values.append({"type": "string", "value": value})
+                
+                if len(values) == len(columns):
+                    # Record is valid, prepare for insertion
+                    query = {
+                        "type": "INSERT",
+                        "table_name": table_name,
+                        "values": values
+                    }
+                    
+                    try:
+                        result, _ = self.run_query(query)
+                        row_count += 1
+                    except Exception as e:
+                        print(f"{Fore.RED}Error inserting row {row_index+1}: {str(e)}{Style.RESET_ALL}")
+            
+            print(f"{Fore.GREEN}COPY command completed. {row_count} records inserted into '{table_name}'.{Style.RESET_ALL}")
+            
+        except Exception as e:
+            print(f"{Fore.RED}Error executing COPY command: {str(e)}{Style.RESET_ALL}")
+            print(f"{Fore.YELLOW}COPY syntax: COPY table_name FROM 'filename' [DELIMITER 'delimiter'] [CSV]{Style.RESET_ALL}")
     
     def _print_help(self):
         """Print available commands and their descriptions."""
@@ -218,8 +351,15 @@ class DBMSApplication:
         print(f"\n{Fore.YELLOW}Special Commands:{Style.RESET_ALL}")
         print(f"  {Fore.CYAN}run{Style.RESET_ALL} <file_path> - Execute SQL statements from a file")
         print(f"  {Fore.CYAN}tables{Style.RESET_ALL} - List all available tables and their columns")
+        print(f"  {Fore.CYAN}copy{Style.RESET_ALL} table_name {Fore.CYAN}from{Style.RESET_ALL} 'filename' [{Fore.CYAN}delimiter{Style.RESET_ALL} 'char'] [{Fore.CYAN}csv{Style.RESET_ALL}] - Bulk import data")
         print(f"  {Fore.CYAN}exit{Style.RESET_ALL}/{Fore.CYAN}quit{Style.RESET_ALL} - Exit the application")
         print(f"  {Fore.CYAN}help{Style.RESET_ALL} - Show this help message\n")
+        
+        print(f"{Fore.YELLOW}Multiline Input:{Style.RESET_ALL}")
+        print(f"  Type SQL statements spanning multiple lines. Continue typing after the '...>' prompt.")
+        print(f"  Submit the query by either:")
+        print(f"   - Ending a line with a semicolon ';'")
+        print(f"   - Entering an empty line\n")
 
 def parse_args():
     """Parse command-line arguments."""
