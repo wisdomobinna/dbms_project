@@ -190,13 +190,21 @@ def p_select_statement(parser, p):
 def p_table_reference(parser, p):
     '''table_reference : ID
                        | ID ID
-                       | ID AS ID'''
+                       | ID AS ID
+                       | LPAREN subquery RPAREN ID
+                       | LPAREN subquery RPAREN AS ID'''
     if len(p) == 2:
         p[0] = p[1]  # Simple table reference
     elif len(p) == 3:
         p[0] = {'name': p[1], 'alias': p[2]}  # Table with alias (implicit)
-    else:
+    elif len(p) == 4:
         p[0] = {'name': p[1], 'alias': p[3]}  # Table with alias (explicit)
+    elif len(p) == 5:
+        # Derived table: (subquery) alias
+        p[0] = {'type': 'derived_table', 'subquery': p[2], 'alias': p[4]}
+    else:
+        # Derived table with explicit AS: (subquery) AS alias
+        p[0] = {'type': 'derived_table', 'subquery': p[2], 'alias': p[5]}
 
 def p_where_clause(parser, p):
     'where_clause : WHERE condition'

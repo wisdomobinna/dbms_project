@@ -629,10 +629,12 @@ class Executor:
     def _execute_select(self, query):
         """Execute a SELECT statement."""
         try:
-            # If this is a derived table structure, extract just the internal subquery
+            # Handle derived table directly by recognizing its structure
+            # If this is a derived table structure, prepare to execute the subquery
             if isinstance(query, dict) and query.get("type") == "derived_table":
-                # Direct execution of derived table's subquery
-                return self._execute_select(query["subquery"])
+                # We need to execute the subquery first, then handle its results
+                # This will be done later in the flow, not by directly returning here
+                pass
             
             # Optimize the query
             optimized_query = self.optimizer.optimize(query)
@@ -682,6 +684,11 @@ class Executor:
                         aliased_records.append((None, row_dict))
                     
                     result = aliased_records
+                    
+                # If we have a direct derived table, we can return the results now
+                if isinstance(query, dict) and query.get("type") == "derived_table" and query.get("subquery") == subquery:
+                    # Format and return the results for direct derived table handling
+                    return self._format_result(result)
                     
                     # Apply WHERE filter
                     if "where" in optimized_query and optimized_query["where"]:

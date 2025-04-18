@@ -338,6 +338,11 @@ class SchemaManager:
     def table_exists(self, table_name):
         """Check if a table exists."""
         try:
+            # Special case for derived tables (subqueries in the FROM clause)
+            if isinstance(table_name, dict) and table_name.get('type') == 'derived_table':
+                # Derived tables always "exist" - they are virtual tables created by subqueries
+                return True
+                
             # Handle possible dict or other unhashable type
             if not isinstance(table_name, str):
                 if hasattr(table_name, 'name'):
@@ -357,11 +362,46 @@ class SchemaManager:
         """Check if a column exists in a table."""
         if not self.table_exists(table_name):
             return False
-        
+            
+        # Special case for derived tables (subqueries in the FROM clause)
+        if isinstance(table_name, dict) and table_name.get('type') == 'derived_table':
+            # For derived tables, get columns from the subquery's projection
+            subquery = table_name.get('subquery', {})
+            projection = subquery.get('projection', {})
+            
+            if projection.get('type') == 'all':
+                # SELECT * - we need to check the base table
+                base_table = subquery.get('table')
+                return self.column_exists(base_table, column_name)
+            elif projection.get('type') == 'columns':
+                # Check for exact column match or alias
+                columns = projection.get('columns', [])
+                for col in columns:
+                    if col.get('type') == 'column' and (col.get('name') == column_name or col.get('alias') == column_name):
+                        return True
+                    elif col.get('type') == 'aggregation' and col.get('alias') == column_name:
+                        return True
+            
+            # If column not found in projection, it doesn't exist in derived table
+            return False
+            
+        # Regular tables - check schema
         return any(col["name"] == column_name for col in self.columns[table_name])
     
     def index_exists(self, table_name, column_name):
         """Check if an index exists for a column."""
+        # Special case for derived tables
+        if isinstance(table_name, dict) and table_name.get('type') == 'derived_table':
+            # Derived tables don't have indexes
+            return False
+            
+        # Convert table_name to a string if it's not already
+        if not isinstance(table_name, str):
+            if hasattr(table_name, 'name'):
+                table_name = table_name.name
+            elif isinstance(table_name, dict) and 'name' in table_name:
+                table_name = table_name['name']
+                
         if not self.table_exists(table_name) or table_name not in self.indexes:
             return False
         
@@ -447,7 +487,53 @@ class SchemaManager:
         """Get all columns for a table."""
         if not self.table_exists(table_name):
             raise SchemaError(f"Table '{table_name}' does not exist")
-        
+            
+        # Special case for derived tables (subqueries in the FROM clause)
+        if isinstance(table_name, dict) and table_name.get('type') == 'derived_table':
+            # Generate column information from the subquery's projection
+            subquery = table_name.get('subquery', {})
+            projection = subquery.get('projection', {})
+            columns = []
+            
+            if projection.get('type') == 'all':
+                # SELECT * - use the columns from the base table
+                base_table = subquery.get('table')
+                return self.get_columns(base_table)
+            elif projection.get('type') == 'columns':
+                # Transform the projection columns to schema columns
+                for col in projection.get('columns', []):
+                    if col.get('type') == 'column':
+                        # Regular column
+                        column_name = col.get('alias', col.get('name'))
+                        # Try to determine column type from original table if possible
+                        column_type = DataType.STRING  # Default type
+                        try:
+                            orig_table = subquery.get('table')
+                            orig_column = col.get('name')
+                            if '.' in orig_column:
+                                parts = orig_column.split('.')
+                                orig_table, orig_column = parts[0], parts[1]
+                            orig_col_info = self.get_column(orig_table, orig_column)
+                            column_type = orig_col_info.get('type', DataType.STRING)
+                        except:
+                            pass  # If we can't determine the type, use STRING as default
+                            
+                        columns.append({
+                            'name': column_name,
+                            'type': column_type
+                        })
+                    elif col.get('type') == 'aggregation':
+                        # Aggregation function (COUNT, SUM, etc.)
+                        column_name = col.get('alias', f"{col.get('function')}({col.get('argument')})")
+                        # Most aggregates return INTEGER
+                        column_type = DataType.INTEGER
+                        columns.append({
+                            'name': column_name,
+                            'type': column_type
+                        })
+                return columns
+                
+        # Regular tables - get columns from schema
         return self.columns[table_name]
     
     def get_column(self, table_name, column_name):
@@ -465,6 +551,18 @@ class SchemaManager:
         """Get the primary key column name for a table."""
         if not self.table_exists(table_name):
             raise SchemaError(f"Table '{table_name}' does not exist")
+            
+        # Special case for derived tables (subqueries in the FROM clause)
+        if isinstance(table_name, dict) and table_name.get('type') == 'derived_table':
+            # Derived tables don't have primary keys
+            return None
+            
+        # Convert table_name to a string if it's not already
+        if not isinstance(table_name, str):
+            if hasattr(table_name, 'name'):
+                table_name = table_name.name
+            elif isinstance(table_name, dict) and 'name' in table_name:
+                table_name = table_name['name']
         
         return self.primary_keys.get(table_name)
     
@@ -472,6 +570,18 @@ class SchemaManager:
         """Get all foreign key relationships for a table."""
         if not self.table_exists(table_name):
             raise SchemaError(f"Table '{table_name}' does not exist")
+            
+        # Special case for derived tables (subqueries in the FROM clause)
+        if isinstance(table_name, dict) and table_name.get('type') == 'derived_table':
+            # Derived tables don't have foreign keys
+            return {}
+            
+        # Convert table_name to a string if it's not already
+        if not isinstance(table_name, str):
+            if hasattr(table_name, 'name'):
+                table_name = table_name.name
+            elif isinstance(table_name, dict) and 'name' in table_name:
+                table_name = table_name['name']
         
         return self.foreign_keys.get(table_name, {})
     
@@ -479,6 +589,18 @@ class SchemaManager:
         """Get all indexed columns for a table."""
         if not self.table_exists(table_name):
             raise SchemaError(f"Table '{table_name}' does not exist")
+            
+        # Special case for derived tables (subqueries in the FROM clause)
+        if isinstance(table_name, dict) and table_name.get('type') == 'derived_table':
+            # Derived tables don't have indexes
+            return []
+            
+        # Convert table_name to a string if it's not already
+        if not isinstance(table_name, str):
+            if hasattr(table_name, 'name'):
+                table_name = table_name.name
+            elif isinstance(table_name, dict) and 'name' in table_name:
+                table_name = table_name['name']
         
         return self.indexes.get(table_name, [])
     

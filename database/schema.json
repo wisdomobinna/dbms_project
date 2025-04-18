@@ -2,7 +2,7 @@
   "tables": {
     "students": {
       "name": "students",
-      "record_count": 1
+      "record_count": 4
     },
     "professors": {
       "name": "professors",
@@ -27,6 +27,14 @@
     "test_auto_increment2": {
       "name": "test_auto_increment2",
       "record_count": 0
+    },
+    "courses": {
+      "name": "courses",
+      "record_count": 3
+    },
+    "enrollments": {
+      "name": "enrollments",
+      "record_count": 15
     }
   },
   "columns": {
@@ -150,6 +158,40 @@
         "type": "INTEGER",
         "primary_key": false
       }
+    ],
+    "courses": [
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "primary_key": true
+      },
+      {
+        "name": "title",
+        "type": "STRING",
+        "primary_key": false
+      },
+      {
+        "name": "credits",
+        "type": "INTEGER",
+        "primary_key": false
+      }
+    ],
+    "enrollments": [
+      {
+        "name": "student_id",
+        "type": "INTEGER",
+        "primary_key": false
+      },
+      {
+        "name": "course_id",
+        "type": "INTEGER",
+        "primary_key": false
+      },
+      {
+        "name": "grade",
+        "type": "STRING",
+        "primary_key": false
+      }
     ]
   },
   "indexes": {
@@ -173,6 +215,9 @@
     ],
     "test_auto_increment2": [
       "id"
+    ],
+    "courses": [
+      "id"
     ]
   },
   "primary_keys": {
@@ -182,7 +227,8 @@
     "classrooms": "id",
     "test": "id",
     "test_auto_increment": "id",
-    "test_auto_increment2": "id"
+    "test_auto_increment2": "id",
+    "courses": "id"
   },
   "foreign_keys": {
     "classrooms": {
