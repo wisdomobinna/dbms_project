@@ -10,7 +10,7 @@
     },
     "buildings": {
       "name": "buildings",
-      "record_count": 0
+      "record_count": 1
     },
     "classrooms": {
       "name": "classrooms",
@@ -35,6 +35,14 @@
     "enrollments": {
       "name": "enrollments",
       "record_count": 15
+    },
+    "users": {
+      "name": "users",
+      "record_count": 0
+    },
+    "orders": {
+      "name": "orders",
+      "record_count": 0
     }
   },
   "columns": {
@@ -192,6 +200,35 @@
         "type": "STRING",
         "primary_key": false
       }
+    ],
+    "users": [
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "primary_key": true
+      },
+      {
+        "name": "name",
+        "type": "STRING",
+        "primary_key": false
+      }
+    ],
+    "orders": [
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "primary_key": true
+      },
+      {
+        "name": "user_id",
+        "type": "INTEGER",
+        "primary_key": false
+      },
+      {
+        "name": "item",
+        "type": "STRING",
+        "primary_key": false
+      }
     ]
   },
   "indexes": {
@@ -218,6 +255,12 @@
     ],
     "courses": [
       "id"
+    ],
+    "users": [
+      "id"
+    ],
+    "orders": [
+      "id"
     ]
   },
   "primary_keys": {
@@ -228,12 +271,20 @@
     "test": "id",
     "test_auto_increment": "id",
     "test_auto_increment2": "id",
-    "courses": "id"
+    "courses": "id",
+    "users": "id",
+    "orders": "id"
   },
   "foreign_keys": {
     "classrooms": {
       "building_id": {
         "table": "buildings",
+        "column": "id"
+      }
+    },
+    "orders": {
+      "user_id": {
+        "table": "users",
         "column": "id"
       }
     }

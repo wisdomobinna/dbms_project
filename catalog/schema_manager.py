@@ -353,6 +353,12 @@ class SchemaManager:
                     # Couldn't find a valid table name
                     return False
             
+            # Handle 'table AS alias' format
+            if isinstance(table_name, str) and " AS " in table_name.upper():
+                # Extract just the table name before the AS keyword
+                real_table = table_name.split(" AS ", 1)[0].strip()
+                return real_table in self.tables
+            
             return table_name in self.tables
         except (TypeError, KeyError):
             # Fallback for any unexpected errors
@@ -362,6 +368,39 @@ class SchemaManager:
         """Check if a column exists in a table."""
         if not self.table_exists(table_name):
             return False
+            
+        # Handle alias.column format for join conditions
+        if "." in column_name:
+            # Extract just the column part
+            parts = column_name.split(".")
+            if len(parts) == 2:
+                # We have alias.column format
+                alias = parts[0]
+                pure_column = parts[1]
+                
+                # If table_name is a dict with an alias matching the alias part (case insensitive)
+                if isinstance(table_name, dict) and table_name.get('alias', '').lower() == alias.lower():
+                    real_table_name = table_name.get('name')
+                    return self.column_exists(real_table_name, pure_column)
+                
+                # If table_name is a string and we have a "table AS alias" format (case insensitive)
+                if isinstance(table_name, str) and " AS " in table_name.upper():
+                    table_parts = table_name.split(" AS ", 1)
+                    real_table = table_parts[0].strip()
+                    table_alias = table_parts[1].strip()
+                    
+                    # Compare aliases case-insensitively
+                    if table_alias.lower() == alias.lower():
+                        return self.column_exists(real_table, pure_column)
+                
+                # Handle the case where the table name itself is the alias
+                # Just check if the column exists in the table, don't return False immediately
+                return self.column_exists(table_name, pure_column)
+                
+        # Extract the real table name if in 'table AS alias' format
+        actual_table_name = table_name
+        if isinstance(table_name, str) and " AS " in table_name.upper():
+            actual_table_name = table_name.split(" AS ", 1)[0].strip()
             
         # Special case for derived tables (subqueries in the FROM clause)
         if isinstance(table_name, dict) and table_name.get('type') == 'derived_table':
@@ -384,9 +423,25 @@ class SchemaManager:
             
             # If column not found in projection, it doesn't exist in derived table
             return False
+        
+        # Special case for table alias dictionary
+        if isinstance(table_name, dict) and "name" in table_name:
+            real_table_name = table_name["name"]
+            return self.column_exists(real_table_name, column_name)
             
         # Regular tables - check schema
-        return any(col["name"] == column_name for col in self.columns[table_name])
+        try:
+            # Only proceed if we have a string table name
+            if not isinstance(actual_table_name, str):
+                return False
+                
+            if actual_table_name not in self.columns:
+                return False
+                
+            return any(col["name"] == column_name for col in self.columns[actual_table_name])
+        except Exception as e:
+            print(f"Error checking column existence: {e}")
+            return False
     
     def index_exists(self, table_name, column_name):
         """Check if an index exists for a column."""

@@ -237,11 +237,29 @@ def p_limit_clause(parser, p):
         }
 
 def p_join_clause(parser, p):
-    'join_clause : JOIN ID ON join_condition'
-    p[0] = {
-        'table': p[2],
-        'condition': p[4]
-    }
+    '''join_clause : JOIN ID ON join_condition
+                   | JOIN ID ID ON join_condition
+                   | JOIN ID AS ID ON join_condition'''
+    if len(p) == 5:
+        # Simple JOIN table ON condition
+        p[0] = {
+            'table': p[2],
+            'condition': p[4]
+        }
+    elif len(p) == 6:
+        # JOIN table alias ON condition (implicit AS)
+        p[0] = {
+            'table': p[2],
+            'alias': p[3],
+            'condition': p[5]
+        }
+    else:
+        # JOIN table AS alias ON condition (explicit AS)
+        p[0] = {
+            'table': p[2],
+            'alias': p[4],
+            'condition': p[6]
+        }
 
 def p_join_condition(parser, p):
     'join_condition : ID DOT ID EQUALS ID DOT ID'
@@ -249,7 +267,8 @@ def p_join_condition(parser, p):
         'left_table': p[1],
         'left_column': p[3],
         'right_table': p[5],
-        'right_column': p[7]
+        'right_column': p[7],
+        'is_alias_join': True  # Flag this as a join using aliases
     }
 
 def p_projection(parser, p):

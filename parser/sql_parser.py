@@ -26,7 +26,7 @@ class SQLParser:
         'IDENTIFIER', 'NUMBER', 'STRING_LITERAL', 'COMMA', 'SEMICOLON',
         'LPAREN', 'RPAREN', 'DOT', 'EQUALS', 'NOTEQUALS', 'LT', 'GT', 'LE', 'GE',
         'ASTERISK', 'AS', 'IN', 'LIMIT', 'OFFSET', 'GROUP', 'AUTO_INCREMENT',
-        'COUNT', 'AVG', 'SUM', 'MAX', 'MIN'  # Aggregate functions
+        'COUNT', 'AVG', 'SUM', 'MAX', 'MIN', 'LIKE'  # Aggregate functions and operators
     )
     
     # Helper function to track token type
@@ -126,7 +126,8 @@ class SQLParser:
         'avg': 'AVG',
         'sum': 'SUM',
         'max': 'MAX',
-        'min': 'MIN'
+        'min': 'MIN',
+        'like': 'LIKE'
     }
     
     def t_IDENTIFIER(self, t):
@@ -599,17 +600,22 @@ class SQLParser:
                         | LT
                         | GT
                         | LE
-                        | GE'''
+                        | GE
+                        | LIKE'''
         p[0] = p[1]
     
     def p_expression(self, p):
         '''expression : IDENTIFIER
+                     | IDENTIFIER DOT IDENTIFIER
                      | NUMBER
                      | STRING_LITERAL'''
         if isinstance(p[1], int):
             p[0] = {'type': 'integer', 'value': p[1]}
         elif isinstance(p[1], str) and (p.slice[1].type == 'STRING_LITERAL'):
             p[0] = {'type': 'string', 'value': p[1]}
+        elif len(p) == 4 and p[2] == '.':
+            # Qualified column reference: table.column
+            p[0] = {'type': 'column', 'name': f"{p[1]}.{p[3]}"}
         else:
             p[0] = {'type': 'column', 'name': p[1]}
     
@@ -632,11 +638,22 @@ class SQLParser:
     def p_order_item(self, p):
         '''order_item : IDENTIFIER
                      | IDENTIFIER ASC
-                     | IDENTIFIER DESC'''
+                     | IDENTIFIER DESC
+                     | IDENTIFIER DOT IDENTIFIER
+                     | IDENTIFIER DOT IDENTIFIER ASC
+                     | IDENTIFIER DOT IDENTIFIER DESC'''
         if len(p) == 2:
+            # Simple column: column
             p[0] = {'column': p[1], 'direction': 'ASC'}
-        else:
+        elif len(p) == 3 and p[2] in ['ASC', 'DESC']:
+            # Simple column with direction: column ASC/DESC
             p[0] = {'column': p[1], 'direction': p[2]}
+        elif len(p) == 4 and p[2] == '.':
+            # Qualified column: table.column
+            p[0] = {'column': f"{p[1]}.{p[3]}", 'direction': 'ASC'}
+        elif len(p) == 5:
+            # Qualified column with direction: table.column ASC/DESC
+            p[0] = {'column': f"{p[1]}.{p[3]}", 'direction': p[4]}
     
     def p_having_clause_opt(self, p):
         '''having_clause_opt : HAVING condition

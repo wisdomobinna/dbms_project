@@ -138,27 +138,50 @@ class QueryOptimizer:
         Select the optimal join method based on table statistics.
         
         Args:
-            left_table (str): Left table name
-            right_table (str): Right table name
+            left_table (str or dict): Left table name or dict with name/alias
+            right_table (str or dict): Right table name or dict with name/alias
             join_condition (dict): Join condition
             
         Returns:
             str: "nested-loop" or "sort-merge"
         """
-        left_key = join_condition["left_column"]
-        right_key = join_condition["right_column"]
+        # Extract real table names if they're in dict format (for aliases)
+        left_table_name = left_table
+        if isinstance(left_table, dict) and 'name' in left_table:
+            left_table_name = left_table['name']
+            
+        right_table_name = right_table
+        if isinstance(right_table, dict) and 'name' in right_table:
+            right_table_name = right_table['name']
         
-        # Check if join columns are indexed
-        left_indexed = self.schema_manager.index_exists(left_table, left_key)
-        right_indexed = self.schema_manager.index_exists(right_table, right_key)
+        # Make sure we have string table names
+        left_table_name = str(left_table_name) if left_table_name is not None else "unknown"
+        right_table_name = str(right_table_name) if right_table_name is not None else "unknown"
+            
+        left_key = join_condition.get("left_column", "id")  # Default to id if missing
+        right_key = join_condition.get("right_column", "id")  # Default to id if missing
         
-        # Check if join columns are sorted (e.g., primary key)
-        left_is_pk = self.schema_manager.get_primary_key(left_table) == left_key
-        right_is_pk = self.schema_manager.get_primary_key(right_table) == right_key
-        
-        # Get table sizes
-        left_size = self.schema_manager.get_record_count(left_table)
-        right_size = self.schema_manager.get_record_count(right_table)
+        try:
+            # Check if join columns are indexed
+            left_indexed = self.schema_manager.index_exists(left_table_name, left_key)
+            right_indexed = self.schema_manager.index_exists(right_table_name, right_key)
+            
+            # Check if join columns are sorted (e.g., primary key)
+            left_is_pk = self.schema_manager.get_primary_key(left_table_name) == left_key
+            right_is_pk = self.schema_manager.get_primary_key(right_table_name) == right_key
+            
+            # Get table sizes
+            left_size = self.schema_manager.get_record_count(left_table_name)
+            right_size = self.schema_manager.get_record_count(right_table_name)
+        except Exception as e:
+            # If there's any error, default to safe values
+            print(f"Warning: Error optimizing join: {str(e)}")
+            left_indexed = False
+            right_indexed = False
+            left_is_pk = False
+            right_is_pk = False
+            left_size = 100
+            right_size = 100
         
         # If one table is very small, nested loop may be better
         size_ratio = max(left_size, right_size) / max(1, min(left_size, right_size))

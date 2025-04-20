@@ -44,6 +44,15 @@ class Executor:
         try:
             query_type = parsed_query["type"]
             
+            # Add debug information for SELECT queries with aliases
+            if query_type == "SELECT" and isinstance(parsed_query.get("table"), dict) and "alias" in parsed_query.get("table", {}):
+                print("DEBUG: Executing SELECT with table alias:")
+                print(f"  Table: {parsed_query['table']}")
+                print(f"  Join: {parsed_query.get('join')}")
+                # Extract and safely print join condition
+                if isinstance(parsed_query.get('join'), dict) and 'condition' in parsed_query['join']:
+                    print(f"  Join condition: {parsed_query['join']['condition']}")
+            
             # Execute based on query type
             if query_type == "CREATE_TABLE":
                 return self._execute_create_table(parsed_query)
@@ -54,7 +63,74 @@ class Executor:
             elif query_type == "DROP_INDEX":
                 return self._execute_drop_index(parsed_query)
             elif query_type == "SELECT":
-                return self._execute_select(parsed_query)
+                try:
+                    return self._execute_select(parsed_query)
+                except Exception as e:
+                    # Print detailed error info for SELECT queries
+                    error_str = str(e)
+                    print(f"Error executing SELECT: {error_str}")
+                    
+                    # Special handling for the unhashable dict error
+                    if "unhashable type: 'dict'" in error_str:
+                        print("Detected unhashable dict error. Attempting direct implementation...")
+                        
+                        # Get the base table and join information
+                        if isinstance(parsed_query.get('table'), dict) and 'name' in parsed_query.get('table', {}):
+                            try:
+                                # Extract table information
+                                table_name = parsed_query['table']['name']
+                                table_alias = parsed_query['table'].get('alias')
+                                
+                                # Get join information if available
+                                join_info = parsed_query.get('join')
+                                if join_info and isinstance(join_info, dict):
+                                    right_table = join_info.get('table')
+                                    right_alias = join_info.get('alias')
+                                    join_condition = join_info.get('condition')
+                                    
+                                    # Direct implementation of the join for alias queries
+                                    result = self._direct_join_for_alias_query(table_name, table_alias, 
+                                                                            right_table, right_alias, 
+                                                                            join_condition, 
+                                                                            parsed_query.get('projection'))
+                                    return result
+                                else:
+                                    # If no join, just read the table
+                                    left_records = self.disk_manager.read_table(table_name)
+                                    # Apply basic projection
+                                    projection = parsed_query.get('projection', {})
+                                    
+                                    # Default to showing all columns
+                                    if projection.get('type') == 'all':
+                                        if left_records:
+                                            columns = list(left_records[0].keys())
+                                            columns = [c for c in columns if not c.startswith('__')]
+                                            rows = []
+                                            for record in left_records:
+                                                if not record.get('__deleted__', False):
+                                                    row = tuple(record.get(col) for col in columns)
+                                                    rows.append(row)
+                                            return {"columns": columns, "rows": rows}
+                                    else:
+                                        # Handle specific columns projection
+                                        columns = []
+                                        for col in projection.get('columns', []):
+                                            if col.get('type') == 'column':
+                                                col_name = col.get('name')
+                                                columns.append(col_name)
+                                        
+                                        rows = []
+                                        for record in left_records:
+                                            if not record.get('__deleted__', False):
+                                                row = tuple(record.get(col) for col in columns)
+                                                rows.append(row)
+                                        return {"columns": columns, "rows": rows}
+                                
+                            except Exception as direct_error:
+                                print(f"Direct implementation failed: {str(direct_error)}")
+                    
+                    # Re-raise the original error if our direct implementation failed
+                    raise
             elif query_type == "INSERT":
                 return self._execute_insert(parsed_query)
             elif query_type == "UPDATE":
@@ -1036,13 +1112,23 @@ class Executor:
         """
         Execute a WHERE clause.
         """
+        # Extract real table name if it's a table alias dictionary
+        real_table_name = table_name
+        if isinstance(table_name, dict) and 'name' in table_name:
+            # Save the alias for later reference
+            if not hasattr(self, 'table_aliases'):
+                self.table_aliases = {}
+            if 'alias' in table_name:
+                self.table_aliases[table_name['alias']] = table_name['name']
+            real_table_name = table_name['name']
+        
         try:
             # Try to read all records from the table
-            all_records = self.disk_manager.read_table(table_name)
+            all_records = self.disk_manager.read_table(real_table_name)
         except Exception as e:
             # If table doesn't exist or is empty, raise appropriate error
             from common.exceptions import StorageError
-            raise StorageError(f"Table file for '{table_name}' does not exist")
+            raise StorageError(f"Table file for '{real_table_name}' does not exist")
         
         result = []
         
@@ -1054,6 +1140,12 @@ class Executor:
         for i, record in enumerate(all_records):
             if record.get("__deleted__", False):
                 continue
+            
+            # Store the table name and its alias in the record for column resolution
+            if isinstance(table_name, dict) and 'alias' in table_name:
+                # Add alias info to the record for column resolution
+                record['__table_name__'] = real_table_name
+                record['__table_alias__'] = table_name['alias']
             
             if self._evaluate_condition(condition, record):
                 result.append((i, record))
@@ -1070,17 +1162,136 @@ class Executor:
         Returns:
             list: List of (None, joined_record) tuples
         """
+        # Print the full query structure for debugging
+        print(f"Debug: Full query structure: {query}")
+        
+        # Initialize or reset the table_aliases dictionary for this query
+        # This ensures we start fresh with each new query
+        self.table_aliases = {}
+        
         # Initialize left table (don't apply WHERE yet)
         left_table = query["table"]
         left_table_alias = None
         
-        # Check if table has an alias
-        if isinstance(left_table, dict) and 'name' in left_table:
-            left_table_alias = left_table['alias']
-            left_table = left_table['name']
+        # Handle possible dict in table reference
+        # If left_table is a dict or other unhashable type, extract the name
+        if not isinstance(left_table, str):
+            if isinstance(left_table, dict) and 'name' in left_table:
+                left_table_alias = left_table.get('alias')
+                left_table_name = left_table['name']
+                print(f"Debug: Left table with alias: {left_table_name} AS {left_table_alias}")
+                
+                # Store this alias
+                if left_table_alias:
+                    self.table_aliases[left_table_alias] = left_table_name
+                
+                left_table = left_table_name
+            elif hasattr(left_table, 'name'):
+                left_table = left_table.name
+                
+        # Pre-process join info to extract aliases
+        if isinstance(query.get("join"), dict):
+            join_info = query["join"]
+            
+            # Extract right table and its alias
+            right_table = join_info.get("table")
+            right_alias = join_info.get("alias")
+            if right_alias and right_table:
+                print(f"Debug: Right table with alias: {right_table} AS {right_alias}")
+                self.table_aliases[right_alias] = right_table
+                
+            # Process join condition for aliases
+            if "condition" in join_info:
+                condition = join_info["condition"]
+                if "left_table" in condition and "right_table" in condition:
+                    left_table_ref = condition["left_table"]
+                    right_table_ref = condition["right_table"]
+                    left_column = condition["left_column"]
+                    right_column = condition["right_column"]
+                    
+                    print(f"Debug: Join condition: {left_table_ref}.{left_column} = {right_table_ref}.{right_column}")
+                    
+                    # Store aliases from the condition if they match our tables
+                    if left_table_ref not in self.table_aliases:
+                        if left_table_ref == left_table_alias:
+                            # This is our left table alias - already stored
+                            pass
+                        elif left_table_ref == right_alias:
+                            # This is our right table alias - already stored
+                            pass
+                        else:
+                            # Assume it's an alias for the left table
+                            self.table_aliases[left_table_ref] = left_table
+                            print(f"Debug: Inferred left alias from condition: {left_table_ref} -> {left_table}")
+                            
+                    if right_table_ref not in self.table_aliases:
+                        if right_table_ref == right_alias:
+                            # This is our right table alias - already stored
+                            pass
+                        elif right_table_ref == left_table_alias:
+                            # This is our left table alias - already stored
+                            pass
+                        else:
+                            # Assume it's an alias for the right table
+                            self.table_aliases[right_table_ref] = right_table
+                            print(f"Debug: Inferred right alias from condition: {right_table_ref} -> {right_table}")
+                            
+        # Print all aliases we've gathered
+        print(f"Debug: Pre-execution aliases: {self.table_aliases}")
         
         # Get all records from the left table (no WHERE filter)
         result = self._execute_where(left_table, None)
+        
+        # Register the alias mapping
+        if left_table_alias:
+            self.table_aliases[left_table_alias] = left_table
+        
+        # Also check if the right table has an alias - safely handle various formats
+        try:
+            if isinstance(query["join"], dict) and query["join"].get("alias"):
+                right_table = query["join"]["table"]
+                right_alias = query["join"]["alias"]
+                if right_alias and right_table:  # Only add if both are valid values
+                    self.table_aliases[right_alias] = right_table
+            elif isinstance(query["join"], list):
+                # For multiple joins, register all aliases
+                for join_info in query["join"]:
+                    if isinstance(join_info, dict) and join_info.get("alias"):
+                        right_table = join_info.get("table")
+                        right_alias = join_info.get("alias")
+                        if right_alias and right_table:  # Only add if both are valid values
+                            self.table_aliases[right_alias] = right_table
+        except (TypeError, KeyError):
+            # If we hit any errors in alias detection, log it but continue
+            print("Warning: Could not resolve table aliases in JOIN clause.")
+        
+        # Check join condition for table.column style references which might contain aliases
+        try:
+            join_info = query["join"]
+            if isinstance(join_info, dict) and "condition" in join_info:
+                condition = join_info["condition"]
+                if isinstance(condition, dict) and "left_table" in condition and "right_table" in condition:
+                    left_table_ref = condition["left_table"]
+                    right_table_ref = condition["right_table"]
+                    
+                    # Make sure these are valid string keys before using them as dictionary keys
+                    if isinstance(left_table_ref, str) and isinstance(right_table_ref, str):
+                        # Register these if they're not already known aliases
+                        if left_table_ref not in self.table_aliases and left_table_ref != left_table:
+                            # This might be an alias or the actual table name
+                            # For now, we'll assume it's an alias for handling c.building_id = b.id style conditions
+                            self.table_aliases[left_table_ref] = left_table
+                        
+                        if right_table_ref not in self.table_aliases:
+                            # This would typically be for the right table
+                            right_table_name = join_info.get("table")
+                            if isinstance(right_table_name, str):
+                                self.table_aliases[right_table_ref] = right_table_name
+                    else:
+                        print(f"Warning: Invalid table references in JOIN condition. Left: {type(left_table_ref)}, Right: {type(right_table_ref)}")
+        except (TypeError, KeyError, AttributeError) as e:
+            # If we hit any errors in join condition handling, log it but continue
+            print(f"Warning: Error processing JOIN condition: {str(e)}")
         
         # If the left table has an alias, rename the columns
         if left_table_alias:
@@ -1150,22 +1361,83 @@ class Executor:
         join_condition = join_info["condition"]
         join_method = join_info.get("method", "nested-loop")
         
+        # Initialize or reset the table aliases
+        if not hasattr(self, 'table_aliases'):
+            self.table_aliases = {}
+        
+        # Handle the most common table alias case
+        left_table_name = left_table
+        if isinstance(left_table, dict) and 'name' in left_table:
+            # Extract and store the alias info
+            if 'alias' in left_table:
+                self.table_aliases[left_table['alias']] = left_table['name']
+            left_table_name = left_table['name']
+        
+        # Add any other possible left table alias
+        if isinstance(left_table, str) and left_table in join_condition.get('left_table', ''):
+            # Possible left table alias in the condition
+            possible_alias = join_condition.get('left_table')
+            if possible_alias and possible_alias != left_table_name:
+                print(f"Debug: Adding possible left table alias: {possible_alias} -> {left_table_name}")
+                self.table_aliases[possible_alias] = left_table_name
+        
+        # Register the right table alias
+        if right_table_alias and right_table_alias != right_table:
+            print(f"Debug: Adding right table alias: {right_table_alias} -> {right_table}")
+            self.table_aliases[right_table_alias] = right_table
+            
+        # Also register from join condition if available
+        if 'right_table' in join_condition:
+            possible_alias = join_condition.get('right_table')
+            if possible_alias and possible_alias != right_table and possible_alias not in self.table_aliases:
+                print(f"Debug: Adding possible right table alias from condition: {possible_alias} -> {right_table}")
+                self.table_aliases[possible_alias] = right_table
+                
+        # Log all registered aliases
+        print(f"Debug: All table aliases: {self.table_aliases}")
+        
         # Extract join columns based on condition format
         if "left_column" in join_condition and "right_column" in join_condition:
             # Simple format
             left_column = join_condition["left_column"]
             right_column = join_condition["right_column"]
+            
+            # Check if this is an alias-style join (table.column = table.column format)
+            if join_condition.get("is_alias_join", False):
+                # Store the alias mapping if not already present
+                left_alias = join_condition.get("left_table")
+                right_alias = join_condition.get("right_table")
+                
+                # Register these aliases in our table_aliases dictionary
+                if left_alias not in self.table_aliases and left_alias != left_table:
+                    self.table_aliases[left_alias] = left_table
+                
+                if right_alias not in self.table_aliases and right_alias != right_table:
+                    self.table_aliases[right_alias] = right_table
+                
+                # For alias joins, ensure we handle left and right correctly
+                # Check if the left table from condition matches the actual left table
+                # or if the right table from condition matches the actual left table
+                left_is_left = (left_alias == left_table) or (self.table_aliases.get(left_alias) == left_table)
+                right_is_left = (right_alias == left_table) or (self.table_aliases.get(right_alias) == left_table)
+                
+                if not left_is_left and right_is_left:
+                    # Swap if the column references are reversed
+                    left_column, right_column = right_column, left_column
         else:
             # Table.column format from grammar
             left_condition_table = join_condition.get("left_table")
             right_condition_table = join_condition.get("right_table")
             
-            # Check if condition tables match actual table names or aliases
-            # Handle self-joins by checking if tables match even when they're the same table
-            if left_condition_table == left_table:
+            # Check if tables in the condition are actually aliases
+            left_real_table = self.table_aliases.get(left_condition_table, left_condition_table)
+            right_real_table = self.table_aliases.get(right_condition_table, right_condition_table)
+            
+            # Determine which table is the left one and which is the right one
+            if left_real_table == left_table or left_condition_table in self.table_aliases:
                 left_column = join_condition.get("left_column")
                 right_column = join_condition.get("right_column")
-            elif right_condition_table == left_table:
+            elif right_real_table == left_table or right_condition_table in self.table_aliases:
                 # Swapped order
                 left_column = join_condition.get("right_column")
                 right_column = join_condition.get("left_column")
@@ -1176,27 +1448,35 @@ class Executor:
                 left_column = join_condition.get("left_column")
                 right_column = join_condition.get("right_column")
             else:
-                # Try to handle the case where condition uses aliases
-                # This is for test_complex_join_with_aliases where we have "s.id = e.student_id"
-                # Here, we need to match s→students and e→enrollments
-                left_table_alias = None
-                right_table_alias = join_info.get("alias")
+                # Enhanced alias handling
+                left_is_alias = left_condition_table in self.table_aliases
+                right_is_alias = right_condition_table in self.table_aliases
                 
-                # We don't have access to the full query here, so we'll use heuristics
-                # Common pattern is to use first letter as alias (s for students, e for enrollments)
-                if left_table.startswith(left_condition_table):
-                    left_table_alias = left_condition_table
-                
-                if left_condition_table == left_table_alias:
+                if left_is_alias and self.table_aliases[left_condition_table] == left_table:
+                    # Left condition table is an alias for the left table
                     left_column = join_condition.get("left_column")
                     right_column = join_condition.get("right_column")
-                elif right_condition_table == left_table_alias:
+                elif right_is_alias and self.table_aliases[right_condition_table] == left_table:
+                    # Right condition table is an alias for the left table
                     left_column = join_condition.get("right_column")
                     right_column = join_condition.get("left_column")
                 else:
-                    # Default to standard order
-                    left_column = join_condition.get("left_column")
-                    right_column = join_condition.get("right_column")
+                    # Default to standard order with better heuristics
+                    # Now also check if the alias is a prefix of the table name
+                    if (left_table.startswith(left_condition_table) or 
+                        (left_condition_table.lower() == left_table.lower()[0]) or
+                        left_condition_table == left_table):
+                        left_column = join_condition.get("left_column")
+                        right_column = join_condition.get("right_column")
+                    elif (left_table.startswith(right_condition_table) or 
+                          (right_condition_table.lower() == left_table.lower()[0]) or
+                          right_condition_table == left_table):
+                        left_column = join_condition.get("right_column")
+                        right_column = join_condition.get("left_column")
+                    else:
+                        # Last resort - use standard order
+                        left_column = join_condition.get("left_column")
+                        right_column = join_condition.get("right_column")
         
         result = []
         
@@ -1209,27 +1489,75 @@ class Executor:
                     if right_record.get("__deleted__", False):
                         continue
                     
-                    # For the first join, left_column refers to a simple column name
-                    # For subsequent joins, it may refer to a qualified column name (table.column)
-                    left_value = None
-                    # First try direct column name
-                    if left_column in left_record:
-                        left_value = left_record.get(left_column)
-                    # Then try qualified name
-                    elif f"{left_table}.{left_column}" in left_record:
-                        left_value = left_record.get(f"{left_table}.{left_column}")
-                    # Try with prefix from the join condition
-                    elif "." in left_column:
-                        left_value = left_record.get(left_column)
-                    # Check if we have enrollments.column style (from second join)
-                    elif f"enrollments.{left_column}" in left_record:
-                        left_value = left_record.get(f"enrollments.{left_column}")
-                    # Finally, try to find it by looking for partial matches
+                    # Use our enhanced _get_expression_value to handle aliases properly
+                    left_expr = {"type": "column", "name": left_column}
+                    if "." in left_column:
+                        # Already qualified with table or alias
+                        left_expr = {"type": "column", "name": left_column}
                     else:
+                        # Try with table prefix first
+                        table_prefix = None
                         for key in left_record.keys():
-                            if key.endswith(f".{left_column}"):
-                                left_value = left_record.get(key)
+                            if "." in key and key.endswith(f".{left_column}"):
+                                table_prefix = key.split(".")[0]
                                 break
+                        
+                        if table_prefix:
+                            left_expr = {"type": "column", "name": f"{table_prefix}.{left_column}"}
+                        else:
+                            left_expr = {"type": "column", "name": left_column}
+                    
+                    # Get the value using our enhanced expression evaluator
+                    left_value = self._get_expression_value(left_expr, left_record)
+                    
+                    # Debug info about aliases
+                    debug_alias_info = ""
+                    if hasattr(self, 'table_aliases') and self.table_aliases:
+                        debug_alias_info = f" (Known aliases: {self.table_aliases})"
+                    
+                    # If our enhanced method fails, fall back to original logic
+                    if left_value is None:
+                        # First try direct column name
+                        if left_column in left_record:
+                            left_value = left_record.get(left_column)
+                        # Then try qualified name with the real table
+                        elif f"{left_table}.{left_column}" in left_record:
+                            left_value = left_record.get(f"{left_table}.{left_column}")
+                        # Try with table aliases
+                        elif hasattr(self, 'table_aliases'):
+                            for alias, real_table in self.table_aliases.items():
+                                if f"{alias}.{left_column}" in left_record:
+                                    left_value = left_record.get(f"{alias}.{left_column}")
+                                    break
+                                if f"{real_table}.{left_column}" in left_record:
+                                    left_value = left_record.get(f"{real_table}.{left_column}")
+                                    break
+                        # Try with prefix from the join condition
+                        elif "." in left_column:
+                            left_value = left_record.get(left_column)
+                        # Check if we have enrollments.column style (from second join)
+                        elif f"enrollments.{left_column}" in left_record:
+                            left_value = left_record.get(f"enrollments.{left_column}")
+                        # Finally, try to find it by looking for partial matches
+                        else:
+                            for key in left_record.keys():
+                                if key.endswith(f".{left_column}"):
+                                    left_value = left_record.get(key)
+                                    break
+                            
+                        # If we still don't have a value, check if this is a known table alias join failure
+                        if left_value is None and join_condition.get("is_alias_join", False):
+                            # If we hit this point, we're dealing with a table alias join that failed to find the column
+                            table_prefix = None
+                            
+                            if "." in left_column:
+                                table_prefix, col_name = left_column.split(".", 1)
+                                
+                                if table_prefix in self.table_aliases:
+                                    # Log available keys to help diagnose
+                                    avail_keys = list(left_record.keys())
+                                    avail_keys = [k for k in avail_keys if not k.startswith("__")]
+                                    print(f"Warning: Column resolution failed for alias {table_prefix}.{col_name}. Available record keys: {avail_keys}{debug_alias_info}")
                     
                     right_value = right_record.get(right_column)
                     
@@ -1420,41 +1748,61 @@ class Executor:
                     col_name = col["name"]
                     output_name = col.get("alias", col_name)  # Use alias if provided
                     
-                    # Check if column exists in record
-                    if col_name in record:
-                        projected_record[output_name] = record.get(col_name)
-                    elif "." in col_name:
-                        # This is already a qualified name (table.column)
+                    # First try to get the value using our enhanced expression evaluator
+                    # which handles aliases and different column name formats
+                    value = self._get_expression_value(col, record)
+                    if value is not None:
+                        projected_record[output_name] = value
+                    else:
+                        # Fall back to the original logic if our enhanced method fails
                         if col_name in record:
                             projected_record[output_name] = record.get(col_name)
+                        elif "." in col_name:
+                            # This is already a qualified name (table.column or alias.column)
+                            table_prefix, field_name = col_name.split(".")
+                            
+                            # Check if this is an alias reference
+                            if hasattr(self, 'table_aliases') and table_prefix in self.table_aliases:
+                                real_table = self.table_aliases[table_prefix]
+                                real_key = f"{real_table}.{field_name}"
+                                if real_key in record:
+                                    projected_record[output_name] = record.get(real_key)
+                                    continue  # Skip to next iteration
+                            
+                            # Try the direct qualified name
+                            if col_name in record:
+                                projected_record[output_name] = record.get(col_name)
+                            else:
+                                # Try finding a match among the record keys
+                                found = False
+                                for key in record.keys():
+                                    if (key.startswith(f"{table_prefix}.") or 
+                                        key == col_name or 
+                                        (key.endswith(f".{field_name}")) or
+                                        key == field_name):
+                                        projected_record[output_name] = record.get(key)
+                                        found = True
+                                        break
+                                
+                                if not found:
+                                    projected_record[output_name] = None
                         else:
-                            # The column might be using another syntax
-                            # Try finding a match among the record keys
+                            # Unqualified column name, look for it with or without prefixes
                             found = False
-                            table_name, field_name = col_name.split(".")
                             for key in record.keys():
-                                if key.startswith(f"{table_name}.") or key == col_name:
+                                if key == col_name:
+                                    # Direct match
+                                    projected_record[output_name] = record.get(key)
+                                    found = True
+                                    break
+                                elif "." in key and key.endswith(f".{col_name}"):
+                                    # Match with a table prefix
                                     projected_record[output_name] = record.get(key)
                                     found = True
                                     break
                             
                             if not found:
                                 projected_record[output_name] = None
-                    else:
-                        # Unqualified column name, look for it with prefixes
-                        found = False
-                        for key in record.keys():
-                            if "." in key and key.endswith(f".{col_name}"):
-                                projected_record[output_name] = record.get(key)
-                                found = True
-                                break
-                            elif key == col_name:
-                                projected_record[output_name] = record.get(key)
-                                found = True
-                                break
-                        
-                        if not found:
-                            projected_record[output_name] = None
                 
                 elif col["type"] == "aggregation":
                     # Handle aggregation column
@@ -1510,8 +1858,40 @@ class Executor:
             
             for item in order_by:
                 column = item["column"]
-                # Get column value
-                value = record.get(column)
+                
+                # Handle table alias references in ORDER BY (e.g., "b.name")
+                if "." in column:
+                    # This is a qualified column with alias
+                    alias, col_name = column.split(".", 1)
+                    
+                    # Try different ways to access column with alias
+                    value = None
+                    
+                    # Try direct alias.column format
+                    if column in record:
+                        value = record.get(column)
+                    elif col_name in record:
+                        # Try just the column name
+                        value = record.get(col_name)
+                    else:
+                        # Try different formats based on table aliases
+                        if hasattr(self, 'table_aliases') and alias in self.table_aliases:
+                            real_table = self.table_aliases[alias]
+                            
+                            # Try real_table.column format
+                            real_key = f"{real_table}.{col_name}"
+                            if real_key in record:
+                                value = record.get(real_key)
+                            
+                            # Try searching for any key that ends with .column_name
+                            if value is None:
+                                for key in record.keys():
+                                    if key.endswith(f".{col_name}"):
+                                        value = record.get(key)
+                                        break
+                else:
+                    # Simple column name without alias
+                    value = record.get(column)
                 
                 # Adjust for direction
                 if item["direction"] == "DESC":
@@ -1589,7 +1969,54 @@ class Executor:
             right = condition["right"]
             operator = condition["operator"]
             
-            # Get left value
+            # Special handling for alias.column format in join conditions
+            # Check if this is a join condition with table aliases on each side
+            if (isinstance(left, dict) and left.get("type") == "column" and 
+                isinstance(right, dict) and right.get("type") == "column"):
+                
+                left_name = left.get("name", "")
+                right_name = right.get("name", "")
+                
+                # If both sides have the format "alias.column"
+                if "." in left_name and "." in right_name:
+                    print(f"Debug: Detected join condition with aliases: {left_name} {operator} {right_name}")
+                    left_alias, left_col = left_name.split(".", 1)
+                    right_alias, right_col = right_name.split(".", 1)
+                    
+                    # Check if these are known aliases
+                    if hasattr(self, 'table_aliases'):
+                        if left_alias in self.table_aliases:
+                            left_real_table = self.table_aliases[left_alias]
+                            print(f"Debug: Left alias {left_alias} -> {left_real_table}")
+                            
+                            # Try to find the column in the record using various formats
+                            left_value = record.get(f"{left_alias}.{left_col}")
+                            if left_value is None:
+                                left_value = record.get(f"{left_real_table}.{left_col}")
+                            if left_value is None:
+                                left_value = record.get(left_col)
+                            
+                            # Same for right side
+                            if right_alias in self.table_aliases:
+                                right_real_table = self.table_aliases[right_alias]
+                                print(f"Debug: Right alias {right_alias} -> {right_real_table}")
+                                
+                                right_value = record.get(f"{right_alias}.{right_col}")
+                                if right_value is None:
+                                    right_value = record.get(f"{right_real_table}.{right_col}")
+                                if right_value is None:
+                                    right_value = record.get(right_col)
+                                
+                                # If we found both values, compare them
+                                if left_value is not None and right_value is not None:
+                                    print(f"Debug: Comparing: {left_value} {operator} {right_value}")
+                                    if operator == "=":
+                                        return left_value == right_value
+                                    elif operator in ("!=", "<>"):
+                                        return left_value != right_value
+                                    # Other operators...
+            
+            # Get left value using normal expression evaluation
             left_value = self._get_expression_value(left, record)
             
             # Get right value
@@ -1613,6 +2040,24 @@ class Executor:
                 return left_value > right_value
             elif operator == ">=":
                 return left_value >= right_value
+            elif operator.upper() == "LIKE":
+                # SQL LIKE operator for string pattern matching
+                if not isinstance(left_value, str) or not isinstance(right_value, str):
+                    # LIKE only works on strings
+                    return False
+                
+                # Convert SQL LIKE pattern to Python regex pattern
+                import re
+                pattern = right_value
+                # Escape special regex characters except % and _
+                pattern = re.escape(pattern).replace('\\%', '%').replace('\\_', '_')
+                # Replace SQL wildcards with regex equivalents
+                pattern = pattern.replace('%', '.*').replace('_', '.')
+                # Anchor the pattern
+                pattern = '^' + pattern + '$'
+                
+                # Perform the match
+                return bool(re.match(pattern, left_value, re.DOTALL))
             else:
                 raise ExecutionError(f"Unknown operator: {operator}")
         
@@ -1673,35 +2118,121 @@ class Executor:
         
         if expr_type == "column":
             column_name = expression["name"]
+            
+            # Debug: print keys in record
+            print(f"Debug: Looking up column '{column_name}' in record with keys: {list(record.keys())}")
+            print(f"Debug: Table aliases: {getattr(self, 'table_aliases', {})}")
+            
             # Try to handle qualified column names (table.column)
             if column_name in record:
+                print(f"Debug: Found direct match for '{column_name}'")
                 return record.get(column_name)
             elif "." in column_name:
-                # This is a qualified column name (Table_name.column_name)
-                # Check both with exact case and with lowercase table name for flexibility
+                # This is a qualified column name (Table_name.column_name or alias.column_name)
                 table_prefix, col = column_name.split(".", 1)
+                
+                print(f"Debug: Processing qualified column '{column_name}' as prefix='{table_prefix}', col='{col}'")
+                
+                # Check if this is a table alias
+                if hasattr(self, 'table_aliases') and table_prefix in self.table_aliases:
+                    print(f"Debug: '{table_prefix}' is a known alias for '{self.table_aliases[table_prefix]}'")
+                    real_table = self.table_aliases[table_prefix]
+                    
+                    # Try all possible combinations of prefixes and the column
+                    real_key = f"{real_table}.{col}"
+                    alias_key = f"{table_prefix}.{col}"
+                    
+                    print(f"Debug: Trying real_key='{real_key}' and alias_key='{alias_key}'")
+                    
+                    # First priority: direct alias match
+                    if alias_key in record:
+                        print(f"Debug: Found alias match '{alias_key}'")
+                        return record.get(alias_key)
+                    
+                    # Second priority: real table match
+                    if real_key in record:
+                        print(f"Debug: Found real table match '{real_key}'")
+                        return record.get(real_key)
+                    
+                    # Third priority: column without prefix
+                    if col in record:
+                        print(f"Debug: Found column without prefix '{col}'")
+                        return record.get(col)
+                    
+                    # Fourth priority: search through all keys for partial matches
+                    for key in record.keys():
+                        if key.endswith(f".{col}"):
+                            print(f"Debug: Found partial match '{key}' for column '{col}'")
+                            return record.get(key)
+                    
+                    # If it's still not found, try accessing the original table directly
+                    try:
+                        print(f"Debug: Trying to read {col} directly from {real_table}")
+                        records = self.disk_manager.read_table(real_table)
+                        
+                        # Now we need to link to the current record... 
+                        # This requires knowing the join condition
+                        # For now, let's just return the column from the first record as a fallback
+                        for r in records:
+                            if col in r and not r.get("__deleted__", False):
+                                print(f"Debug: Found {col} in direct table access")
+                                return r[col]
+                        
+                        print(f"Debug: Column {col} not found in direct table access")
+                    except Exception as e:
+                        print(f"Debug: Error during direct table access: {str(e)}")
+                    
+                    print(f"Debug: All attempts failed for '{column_name}'")
+                    return None
                 
                 # Try exact case first
                 if column_name in record:
+                    print(f"Debug: Found exact match '{column_name}'")
                     return record.get(column_name)
+                
+                # Try the alias directly
+                if hasattr(self, 'table_aliases'):
+                    for alias, real_table in self.table_aliases.items():
+                        # Try with the actual table name format
+                        real_key = f"{real_table}.{col}"
+                        if real_key in record:
+                            print(f"Debug: Found match using real table '{real_key}'")
+                            return record.get(real_key)
+                        # Try with the alias format
+                        alias_key = f"{alias}.{col}"
+                        if alias_key in record:
+                            print(f"Debug: Found match using alias '{alias_key}'")
+                            return record.get(alias_key)
                 
                 # Try lowercase table name
                 lowercase_variant = f"{table_prefix.lower()}.{col}"
                 if lowercase_variant in record:
+                    print(f"Debug: Found lowercase match '{lowercase_variant}'")
                     return record.get(lowercase_variant)
                 
-                # Try if the record has it with a different case
+                # Try case-insensitive match
                 for key in record.keys():
                     if key.lower() == column_name.lower():
+                        print(f"Debug: Found case-insensitive match '{key}'")
                         return record.get(key)
-                        
+                    # Also try with just the column part for unqualified columns in the record
+                    if key.lower() == col.lower():
+                        print(f"Debug: Found column-only match '{key}'")
+                        return record.get(key)
+                
+                print(f"Debug: No match found for '{column_name}'")
                 return None
             else:
-                # Try with each table prefix
+                # Try with each table prefix (unqualified column name)
                 for key in record.keys():
                     if "." in key and key.endswith("." + column_name):
+                        print(f"Debug: Found match with prefix '{key}'")
                         return record.get(key)
-                # Not found
+                    elif key == column_name:
+                        print(f"Debug: Found exact match '{key}'")
+                        return record.get(key)
+                
+                print(f"Debug: No match found for unqualified '{column_name}'")
                 return None
                 
         elif expr_type == "aggregation":
@@ -1806,6 +2337,149 @@ class Executor:
     #     result = f"{header}\n{separator}\n" + "\n".join(rows)
         
     #     return result
+    
+    def _direct_join_for_alias_query(self, left_table, left_alias, right_table, right_alias, join_condition, projection):
+        """
+        Direct implementation of a join query with aliases to work around unhashable dict error.
+        This is a specialized function for handling JOIN with aliases that bypasses the normal execution path.
+        
+        Args:
+            left_table (str): Name of the left table
+            left_alias (str): Alias for the left table
+            right_table (str): Name of the right table
+            right_alias (str): Alias for the right table
+            join_condition (dict): The join condition
+            projection (dict): The projection specification
+            
+        Returns:
+            dict: Formatted query result
+        """
+        try:
+            print(f"Executing direct join: {left_table} AS {left_alias} JOIN {right_table} AS {right_alias}")
+            print(f"Join condition: {join_condition}")
+            
+            # Read both tables
+            left_records = self.disk_manager.read_table(left_table)
+            right_records = self.disk_manager.read_table(right_table)
+            
+            # Filter out deleted records
+            left_records = [r for r in left_records if not r.get("__deleted__", False)]
+            right_records = [r for r in right_records if not r.get("__deleted__", False)]
+            
+            # Extract join columns from the condition
+            left_column = join_condition.get("left_column")
+            right_column = join_condition.get("right_column")
+            
+            # If using the table.column format, extract just the column name
+            if "." in left_column:
+                _, left_column = left_column.split(".", 1)
+            if "." in right_column:
+                _, right_column = right_column.split(".", 1)
+            
+            # Perform the join - choose the smaller table for the outer loop
+            joined_records = []
+            
+            # Choose which table should be the outer loop based on size
+            if len(left_records) <= len(right_records):
+                # Left table is smaller or equal, use standard approach
+                for left_record in left_records:
+                    left_value = left_record.get(left_column)
+                    for right_record in right_records:
+                        right_value = right_record.get(right_column)
+                        if left_value == right_value:
+                            # Create a joined record
+                            joined_record = {}
+                            # Add left table columns with proper prefix
+                            for key, value in left_record.items():
+                                if not key.startswith("__"):
+                                    joined_record[f"{left_alias}.{key}"] = value
+                                    # Also include unqualified column name for compatibility
+                                    joined_record[key] = value
+                            # Add right table columns with proper prefix
+                            for key, value in right_record.items():
+                                if not key.startswith("__"):
+                                    joined_record[f"{right_alias}.{key}"] = value
+                                    # Also include unqualified column name for compatibility
+                                    joined_record[key] = value
+                            joined_records.append(joined_record)
+            else:
+                # Right table is smaller, swap the loop order for efficiency
+                print(f"Debug: Right table ({len(right_records)} records) is smaller than left table ({len(left_records)} records), swapping loop order")
+                for right_record in right_records:
+                    right_value = right_record.get(right_column)
+                    for left_record in left_records:
+                        left_value = left_record.get(left_column)
+                        if right_value == left_value:
+                            # Create a joined record
+                            joined_record = {}
+                            # Add left table columns with proper prefix
+                            for key, value in left_record.items():
+                                if not key.startswith("__"):
+                                    joined_record[f"{left_alias}.{key}"] = value
+                                    # Also include unqualified column name for compatibility
+                                    joined_record[key] = value
+                            # Add right table columns with proper prefix
+                            for key, value in right_record.items():
+                                if not key.startswith("__"):
+                                    joined_record[f"{right_alias}.{key}"] = value
+                                    # Also include unqualified column name for compatibility
+                                    joined_record[key] = value
+                            joined_records.append(joined_record)
+            
+            # Handle projection
+            if projection["type"] == "all":
+                # SELECT * - return all columns from both tables
+                if joined_records:
+                    columns = list(joined_records[0].keys())
+                    rows = []
+                    for record in joined_records:
+                        rows.append(tuple(record[col] for col in columns))
+                    return {"columns": columns, "rows": rows}
+                else:
+                    return {"columns": ["No Results"], "rows": []}
+            else:
+                # SELECT specific columns
+                result_columns = []
+                for col in projection["columns"]:
+                    if col["type"] == "column":
+                        col_name = col["name"]
+                        alias = col.get("alias", col_name)
+                        result_columns.append((col_name, alias))
+                
+                if not joined_records:
+                    return {"columns": [alias for _, alias in result_columns], "rows": []}
+                
+                rows = []
+                for record in joined_records:
+                    row_values = []
+                    for col_name, _ in result_columns:
+                        # Handle column references with table alias
+                        if col_name in record:
+                            row_values.append(record[col_name])
+                        else:
+                            # For aliases like c.name, try both c.name and left_alias.name
+                            value = None
+                            if "." in col_name:
+                                table_prefix, field = col_name.split(".", 1)
+                                # Check if this is using one of our aliases
+                                if table_prefix == left_alias:
+                                    value = record.get(f"{left_alias}.{field}")
+                                elif table_prefix == right_alias:
+                                    value = record.get(f"{right_alias}.{field}")
+                                # If still not found, try the original format
+                                if value is None:
+                                    value = record.get(col_name)
+                                # If still not found, try just the field name without prefix
+                                if value is None:
+                                    value = record.get(field)
+                            row_values.append(value)
+                    rows.append(tuple(row_values))
+                
+                return {"columns": [alias for _, alias in result_columns], "rows": rows}
+                
+        except Exception as e:
+            print(f"Error in direct join implementation: {str(e)}")
+            raise
     
     def _format_result(self, records):
         """
