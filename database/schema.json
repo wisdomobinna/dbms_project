@@ -358,11 +358,19 @@
     "orders": [
       "id"
     ],
-
     "million_1": [
       "col1"
     ],
     "thousand_1": [
+      "col1"
+    ],
+    "hun_thousand_1": [
+      "col1"
+    ],
+    "hun_thousand_i": [
+      "col1"
+    ],
+    "million_i": [
       "col1"
     ]
   },

@@ -928,33 +928,99 @@ class SQLParser:
         if not schema_manager.index_exists(table_name, column_name):
             raise ValidationError(f"No index exists on '{table_name}.{column_name}'")
     
+    # def _validate_select(self, parsed_query, schema_manager):
+    #     """Validate SELECT query."""
+    #     table_name = parsed_query["table"]
+        
+    #     if not schema_manager.table_exists(table_name):
+    #         raise ValidationError(f"Table '{table_name}' does not exist")
+        
+    #     # Validate projection
+    #     projection = parsed_query["projection"]
+    #     if projection["type"] == "columns":
+    #         for col in projection["columns"]:
+    #             if col["type"] == "column" and not schema_manager.column_exists(table_name, col["name"]):
+    #                 raise ValidationError(f"Column '{col['name']}' does not exist in table '{table_name}'")
+        
+    #     # Validate join if present
+    #     if "join" in parsed_query and parsed_query["join"]:
+    #         join_table = parsed_query["join"]["table"]
+    #         if not schema_manager.table_exists(join_table):
+    #             raise ValidationError(f"Join table '{join_table}' does not exist")
+            
+    #         join_cond = parsed_query["join"]["condition"]
+    #         if not schema_manager.column_exists(join_cond["left_table"], join_cond["left_column"]):
+    #             raise ValidationError(f"Column '{join_cond['left_column']}' does not exist in table '{join_cond['left_table']}'")
+            
+    #         if not schema_manager.column_exists(join_cond["right_table"], join_cond["right_column"]):
+    #             raise ValidationError(f"Column '{join_cond['right_column']}' does not exist in table '{join_cond['right_table']}'")
     def _validate_select(self, parsed_query, schema_manager):
         """Validate SELECT query."""
-        table_name = parsed_query["table"]
-        
-        if not schema_manager.table_exists(table_name):
-            raise ValidationError(f"Table '{table_name}' does not exist")
-        
-        # Validate projection
+        table_map = {}  # alias or name -> actual table name
+
+        def register_table(tbl):
+            if isinstance(tbl, dict):
+                if "name" in tbl:  # From FROM clause
+                    base = tbl["name"]
+                    alias = tbl.get("alias", base)
+                elif "table" in tbl:  # From JOIN clause
+                    base = tbl["table"]
+                    alias = tbl.get("alias", base)
+                else:
+                    return  # Skip malformed dict
+                table_map[alias] = base
+            else:
+                table_map[tbl] = tbl
+
+
+        # Register main table
+        register_table(parsed_query["table"])
+
+        # Register joined tables
+        joins = parsed_query.get("join")
+        if joins:
+            if isinstance(joins, list):
+                for j in joins:
+                    register_table(j)
+            else:
+                register_table(joins)
+
+        # Validate all registered tables exist
+        for base in table_map.values():
+            if not schema_manager.table_exists(base):
+                raise ValidationError(f"Table '{base}' does not exist")
+
+        # Validate projection columns
         projection = parsed_query["projection"]
         if projection["type"] == "columns":
             for col in projection["columns"]:
-                if col["type"] == "column" and not schema_manager.column_exists(table_name, col["name"]):
-                    raise ValidationError(f"Column '{col['name']}' does not exist in table '{table_name}'")
-        
-        # Validate join if present
-        if "join" in parsed_query and parsed_query["join"]:
-            join_table = parsed_query["join"]["table"]
-            if not schema_manager.table_exists(join_table):
-                raise ValidationError(f"Join table '{join_table}' does not exist")
-            
-            join_cond = parsed_query["join"]["condition"]
-            if not schema_manager.column_exists(join_cond["left_table"], join_cond["left_column"]):
-                raise ValidationError(f"Column '{join_cond['left_column']}' does not exist in table '{join_cond['left_table']}'")
-            
-            if not schema_manager.column_exists(join_cond["right_table"], join_cond["right_column"]):
-                raise ValidationError(f"Column '{join_cond['right_column']}' does not exist in table '{join_cond['right_table']}'")
-    
+                if col["type"] != "column":
+                    continue
+                col_name = col["name"]
+                base_col = col_name.split(".")[-1]
+                found = any(schema_manager.column_exists(tbl, base_col) for tbl in table_map.values())
+                if not found:
+                    raise ValidationError(f"Column '{col_name}' does not exist in any referenced table")
+
+        # Validate join conditions
+        if joins:
+            if not isinstance(joins, list):
+                joins = [joins]
+            for join in joins:
+                cond = join["condition"]
+                for side in ("left_table", "right_table"):
+                    alias = cond[side]
+                    if alias not in table_map:
+                        raise ValidationError(f"Unknown table alias '{alias}' in join")
+                    column = cond["left_column"] if side == "left_table" else cond["right_column"]
+                    base_table = table_map[alias]
+                    if not schema_manager.column_exists(base_table, column):
+                        raise ValidationError(f"Column '{column}' does not exist in table '{alias}'")
+
+        # Validate WHERE clause
+        if parsed_query.get("where"):
+            self._validate_condition(parsed_query["where"], table_map, schema_manager)
+
     def _validate_insert(self, parsed_query, schema_manager):
         """Validate INSERT query."""
         table_name = parsed_query["table_name"]
@@ -1101,20 +1167,25 @@ class SQLParser:
         if not schema_manager.table_exists(table_name):
             raise ValidationError(f"Table '{table_name}' does not exist")
     
-    def _validate_condition(self, condition, table_name, schema_manager):
-        """Validate a WHERE condition."""
-        if condition["type"] == "and" or condition["type"] == "or":
-            self._validate_condition(condition["left"], table_name, schema_manager)
-            self._validate_condition(condition["right"], table_name, schema_manager)
+    def _validate_condition(self, condition, table_map, schema_manager):
+        """Validate WHERE/HAVING condition."""
+        if condition["type"] in {"and", "or"}:
+            self._validate_condition(condition["left"], table_map, schema_manager)
+            self._validate_condition(condition["right"], table_map, schema_manager)
         elif condition["type"] == "comparison":
-            # Validate left side (column)
-            if condition["left"]["type"] == "column":
-                column_name = condition["left"]["name"]
-                if not schema_manager.column_exists(table_name, column_name):
-                    raise ValidationError(f"Column '{column_name}' does not exist in table '{table_name}'")
-            
-            # Validate right side (if it's a column)
-            if condition["right"]["type"] == "column":
-                column_name = condition["right"]["name"]
-                if not schema_manager.column_exists(table_name, column_name):
-                    raise ValidationError(f"Column '{column_name}' does not exist in table '{table_name}'")
+            for side in ("left", "right"):
+                expr = condition[side]
+                if expr["type"] == "column":
+                    col_name = expr["name"]
+                    base_col = col_name.split(".")[-1]
+                    found = any(schema_manager.column_exists(tbl, base_col) for tbl in table_map.values())
+                    if not found:
+                        raise ValidationError(f"Column '{col_name}' does not exist in any referenced table")
+        elif condition["type"] == "in_subquery":
+            expr = condition["column"]
+            if expr["type"] == "column":
+                col_name = expr["name"]
+                base_col = col_name.split(".")[-1]
+                found = any(schema_manager.column_exists(tbl, base_col) for tbl in table_map.values())
+                if not found:
+                    raise ValidationError(f"Column '{col_name}' does not exist in any referenced table")

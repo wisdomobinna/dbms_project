@@ -66,7 +66,6 @@ class DBMSApplication:
             tuple: (result, execution_time)
         """
         start_time = time.time()
-        
         try:
             # Parse the query
             parsed_query = self.parser.parse(query)

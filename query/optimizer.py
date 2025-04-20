@@ -46,46 +46,53 @@ class QueryOptimizer:
         
         # Optimize JOIN method selection
         if "join" in optimized_query and optimized_query["join"]:
-            # Handle the complex structure of multiple joins
-            # First, flatten the join structure if needed
-            flattened_joins = self._flatten_joins(optimized_query["join"])
-            optimized_query["join"] = flattened_joins
-            
-            # Now optimize each join in the flat list
-            if isinstance(optimized_query["join"], list):
-                # Handle multiple joins
-                for i, join in enumerate(optimized_query["join"]):
-                    left_table = optimized_query["table"] if i == 0 else optimized_query["join"][i-1]["table"]
-                    right_table = join["table"]
-                    join_condition = join["condition"]
-                    optimized_query["join"][i]["method"] = self._select_join_method(
-                        left_table,
-                        right_table,
-                        join_condition
-                    )
+            # flatten into a list (even if it’s length 1)
+            flattened = self._flatten_joins(optimized_query["join"])
+            # if you know you'll only ever have one join, just pull it out:
+            join = flattened[0] if isinstance(flattened, list) else flattened
+
+            # unwrap left and right table names (in case they're dicts)
+            raw_left  = optimized_query["table"]
+            raw_right = join["table"]
+            left_name  = raw_left["name"]  if isinstance(raw_left, dict) else raw_left
+            right_name = raw_right["name"] if isinstance(raw_right, dict) else raw_right
+
+            cond = join["condition"]
+
+            # pick strategy
+            strategy = self._select_join_method(left_name, right_name, cond)
+
+            # apply method & columns
+            join["method"]       = strategy["method"]
+            join["outer_column"] = strategy["outer_column"]
+            join["inner_column"] = strategy["inner_column"]
+
+            if strategy.get("swapped", False):
+                # swap so executor scans the smaller/outer first
+                optimized_query["table"] = strategy["outer"]
+                join["table"]           = strategy["inner"]
+
+                # fix the join condition
+                cond["left_table"]   = strategy["outer"]
+                cond["right_table"]  = strategy["inner"]
+                cond["left_column"]  = strategy["outer_column"]
+                cond["right_column"] = strategy["inner_column"]
+
+                join["swapped"] = True
             else:
-                # Handle single join
-                join = optimized_query["join"]
-                left_table = optimized_query["table"]
-                right_table = join["table"]
-                join_condition = join["condition"]
+                # no swap
+                optimized_query["table"] = strategy["outer"]
+                join["table"]            = strategy["inner"]
+                join["swapped"]          = False
 
-                join_strategy = self._select_join_method(left_table, right_table, join_condition)
-
-                join["method"] = join_strategy["method"]
-                join["swapped"] = join_strategy.get("swapped", False)
-                join["outer"] = join_strategy.get("outer")
-                join["inner"] = join_strategy.get("inner")
-                join["outer_column"] = join_strategy.get("outer_column")
-                join["inner_column"] = join_strategy.get("inner_column")
+            # stick it back in
+            optimized_query["join"] = join
 
         print("Final optimized join:")
-        print(json.dumps(optimized_query.get("join", {}), indent=2))
-        # Add execution plan info
+        print(json.dumps(optimized_query["join"], indent=2))
         optimized_query["execution_plan"] = self._generate_execution_plan(optimized_query)
-        
         return optimized_query
-    
+            
     def _optimize_conditions(self, condition, table_name):
         """
         Optimize WHERE conditions by reordering for efficiency.
@@ -157,9 +164,28 @@ class QueryOptimizer:
         left_indexed = self.schema_manager.index_exists(left_table, left_key)
         right_indexed = self.schema_manager.index_exists(right_table, right_key)
 
+        # Use hash-join for big sizes
+        if left_size * right_size > 1e7:
+            if left_size <= right_size:
+                outer, inner        = left_table,  join_table
+                outer_col, inner_col= left_key,    right_key
+                swapped             = False
+            else:
+                outer, inner        = join_table, left_table
+                outer_col, inner_col= right_key,   left_key
+                swapped             = True
+            print(f"outer: {outer}, inner: {inner}")
 
-        # Prefer index-nested-loop with smaller table as outer
-        if right_indexed and left_size <= right_size:
+            return {
+                "method":       "hash-join",
+                "outer":        outer,
+                "inner":        inner,
+                "outer_column": outer_col,
+                "inner_column": inner_col,
+                "swapped":      swapped
+            }
+        # Use index-nested-loop with smaller table as outer
+        elif right_indexed and left_size <= right_size:
             print("_select_join: using right_indexed plan with smaller outer")
             print(f"left: {left_size}, right: {right_size}")
             return {
@@ -180,17 +206,38 @@ class QueryOptimizer:
                 "inner_column": left_key,
                 "swapped": True
             }
+        # Fallback: use hash-join for very large unindexed tables
+        if (not left_indexed and not right_indexed
+            and left_size * right_size > 1e7):  # tune threshold as you like
+            if left_size <= right_size:
+                outer, inner        = left_table,  join_table
+                outer_col, inner_col= left_key,    right_key
+                swapped             = False
+            else:
+                outer, inner        = join_table, left_table
+                outer_col, inner_col= right_key,   left_key
+                swapped             = True
 
-        # Fallback: nested-loop with left as outer
-        print("_select_join: fallback to nested-loop join")
-        return {
-            "method": "nested-loop",
-            "outer": left_table,
-            "inner": right_table,
-            "outer_column": left_key,
-            "inner_column": right_key,
-            "swapped": False
-        }
+            return {
+                "method":       "hash-join",
+                "outer":        outer,
+                "inner":        inner,
+                "outer_column": outer_col,
+                "inner_column": inner_col,
+                "swapped":      swapped
+            }
+
+
+        # # Fallback: nested-loop with left as outer
+        # print("_select_join: fallback to nested-loop join")
+        # return {
+        #     "method": "nested-loop",
+        #     "outer": left_table,
+        #     "inner": right_table,
+        #     "outer_column": left_key,
+        #     "inner_column": right_key,
+        #     "swapped": False
+        # }
 
 
     
@@ -380,6 +427,10 @@ class QueryOptimizer:
                 elif join_method == "index-nested-loop":
                     # Index nested loop uses index lookup for inner table
                     join_cost = plan.get("filter", {}).get("output_records", record_count) * 10  # Assume index lookups are 10x faster
+                elif join_method == "hash-join":
+                    print("Initiating hash-join")
+                    outer_count = plan.get("filter", {}).get("output_records", record_count)
+                    join_cost   = outer_count + join_records
                 else:
                     join_cost = current_records * join_records
                     print("Worst case joining")
