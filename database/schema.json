@@ -36,6 +36,30 @@
       "name": "enrollments",
       "record_count": 15
     },
+    "thousand_i": {
+      "name": "thousand_i",
+      "record_count": 1000
+    },
+    "thousand_1": {
+      "name": "thousand_1",
+      "record_count": 1000
+    },
+    "hun_thousand_i": {
+      "name": "hun_thousand_i",
+      "record_count": 100000
+    },
+    "hun_thousand_1": {
+      "name": "hun_thousand_1",
+      "record_count": 100000
+    },
+    "million_i": {
+      "name": "million_i",
+      "record_count": 1000000
+    },
+    "million_1": {
+      "name": "million_1",
+      "record_count": 1000000
+    },
     "users": {
       "name": "users",
       "record_count": 0
@@ -201,6 +225,78 @@
         "primary_key": false
       }
     ],
+    "thousand_i": [
+      {
+        "name": "col1",
+        "type": "INTEGER",
+        "primary_key": false
+      },
+      {
+        "name": "col2",
+        "type": "INTEGER",
+        "primary_key": false
+      }
+    ],
+    "thousand_1": [
+      {
+        "name": "col1",
+        "type": "INTEGER",
+        "primary_key": false
+      },
+      {
+        "name": "col2",
+        "type": "INTEGER",
+        "primary_key": false
+      }
+    ],
+    "hun_thousand_i": [
+      {
+        "name": "col1",
+        "type": "INTEGER",
+        "primary_key": false
+      },
+      {
+        "name": "col2",
+        "type": "INTEGER",
+        "primary_key": false
+      }
+    ],
+    "hun_thousand_1": [
+      {
+        "name": "col1",
+        "type": "INTEGER",
+        "primary_key": false
+      },
+      {
+        "name": "col2",
+        "type": "INTEGER",
+        "primary_key": false
+      }
+    ],
+    "million_i": [
+      {
+        "name": "col1",
+        "type": "INTEGER",
+        "primary_key": false
+      },
+      {
+        "name": "col2",
+        "type": "INTEGER",
+        "primary_key": false
+      }
+    ],
+    "million_1": [
+      {
+        "name": "col1",
+        "type": "INTEGER",
+        "primary_key": false
+      },
+      {
+        "name": "col2",
+        "type": "INTEGER",
+        "primary_key": false
+      }
+    ],
     "users": [
       {
         "name": "id",
@@ -261,6 +357,13 @@
     ],
     "orders": [
       "id"
+    ],
+
+    "million_1": [
+      "col1"
+    ],
+    "thousand_1": [
+      "col1"
     ]
   },
   "primary_keys": {

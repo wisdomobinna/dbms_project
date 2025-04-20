@@ -76,6 +76,9 @@ class DBMSApplication:
             
             # Optimize the query if it's a SELECT
             if parsed_query["type"] == "SELECT":
+                import json
+                print("Parsed query (before optimizer):")
+                print(json.dumps(parsed_query, indent=2))
                 parsed_query = self.optimizer.optimize(parsed_query)
             
             # Execute the query
@@ -238,103 +241,101 @@ class DBMSApplication:
     def _execute_copy_command(self, command):
         """
         Execute a COPY command for bulk data import.
-        
+
         Syntax: COPY table_name FROM 'filename' [DELIMITER 'delimiter'] [CSV]
-        
-        Args:
-            command (str): The COPY command to execute
         """
         import csv
         import re
-        
-        # Parse the COPY command
+
         try:
-            # Extract table name and filename using regex
+            # Extract table name and filename
             copy_match = re.match(r'COPY\s+(\w+)\s+FROM\s+[\'"]([^\'"]+)[\'"]', command, re.IGNORECASE)
             if not copy_match:
                 raise ValueError("Invalid COPY command syntax. Expected: COPY table FROM 'filename' [DELIMITER 'delimiter'] [CSV]")
-                
+
             table_name = copy_match.group(1)
             filename = copy_match.group(2)
-            
-            # Check if table exists
+
+            # Confirm table exists
             if not self.schema_manager.table_exists(table_name):
                 raise ValueError(f"Table '{table_name}' does not exist")
-                
-            # Get delimiter (default is comma)
+
+            # Extract delimiter
             delimiter = ','
             delimiter_match = re.search(r'DELIMITER\s+[\'"]([^\'"]+)[\'"]', command, re.IGNORECASE)
             if delimiter_match:
                 delimiter = delimiter_match.group(1)
-                
-            # Check if CSV format
+
             is_csv = 'CSV' in command.upper()
-            
-            # Get column definitions
+
             columns = self.schema_manager.get_columns(table_name)
-            
-            # Read the file and process records
+
+            # Read file
             with open(filename, 'r') as f:
                 if is_csv:
                     reader = csv.reader(f, delimiter=delimiter)
                     rows = list(reader)
+                    if rows and rows[0][0].strip().lower() == columns[0]['name'].lower():
+                        rows = rows[1:]
                 else:
-                    # Simple text format with delimiter
-                    rows = []
-                    for line in f:
-                        line = line.strip()
-                        if line:
-                            rows.append(line.split(delimiter))
-            
-            # Process and insert records
-            records = []
+                    rows = [line.strip().split(delimiter) for line in f if line.strip()]
+
+            values_batch = []
+            batch_size = 10000
             row_count = 0
-            
+
             for row_index, row in enumerate(rows):
                 if len(row) != len(columns):
-                    print(f"{Fore.YELLOW}Warning: Row {row_index+1} has {len(row)} fields but table has {len(columns)} columns. Skipping.{Style.RESET_ALL}")
+                    print(f"Skipping row {row_index+1}: column count mismatch")
                     continue
-                    
+
                 record = {}
-                values = []
-                
-                # Process each field based on column type
-                for i, (value, column) in enumerate(zip(row, columns)):
-                    col_name = column["name"]
+                for value, column in zip(row, columns):
                     value = value.strip()
-                    
-                    # Handle type conversion
-                    if column["type"] == DataType.INTEGER:
-                        try:
-                            typed_value = int(value)
-                            record[col_name] = typed_value
-                            values.append({"type": "integer", "value": typed_value})
-                        except ValueError:
-                            print(f"{Fore.YELLOW}Warning: Invalid integer value '{value}' for column '{col_name}' in row {row_index+1}. Skipping row.{Style.RESET_ALL}")
-                            break
-                    else:  # STRING type
-                        record[col_name] = value
-                        values.append({"type": "string", "value": value})
-                
-                if len(values) == len(columns):
-                    # Record is valid, prepare for insertion
-                    query = {
-                        "type": "INSERT",
-                        "table_name": table_name,
-                        "values": values
-                    }
-                    
+                    col_type = column["type"]
+                    col_name = column["name"]
                     try:
-                        result, _ = self.run_query(query)
-                        row_count += 1
-                    except Exception as e:
-                        print(f"{Fore.RED}Error inserting row {row_index+1}: {str(e)}{Style.RESET_ALL}")
-            
-            print(f"{Fore.GREEN}COPY command completed. {row_count} records inserted into '{table_name}'.{Style.RESET_ALL}")
-            
+                        if col_type == DataType.INTEGER:
+                            typed_value = int(value)
+                            record[col_name] = {"type": "integer", "value": typed_value}
+                        else:
+                            record[col_name] = {"type": "string", "value": value}
+                    except ValueError:
+                        print(f"Invalid value for {col_name} ({col_type}): {value}")
+                        break
+                else:
+                    values_batch.append(record)
+
+                    if len(values_batch) >= batch_size:
+                        result = self.executor.execute({
+                            "type": "BULK_INSERT",
+                            "table_name": table_name,
+                            "values": values_batch
+                        })
+                        if isinstance(result, str) and result.startswith("Error"):
+                            print(f"Insert error: {result}")
+                        else:
+                            row_count += len(values_batch)
+                            print(f"At {row_count}")
+                        values_batch = []
+            if values_batch:
+                result = self.executor.execute({
+                    "type": "BULK_INSERT",
+                    "table_name": table_name,
+                    "values": values_batch
+                })
+                if isinstance(result, str) and result.startswith("Error"):
+                    print(f"Insert error: {result}")
+                else:
+                    row_count += len(values_batch)
+
+
+            print(f"\n COPY completed: {row_count} rows inserted into '{table_name}'")
+
         except Exception as e:
-            print(f"{Fore.RED}Error executing COPY command: {str(e)}{Style.RESET_ALL}")
-            print(f"{Fore.YELLOW}COPY syntax: COPY table_name FROM 'filename' [DELIMITER 'delimiter'] [CSV]{Style.RESET_ALL}")
+            print(f"Error during COPY: {str(e)}")
+            print(f"Expected syntax: COPY table_name FROM 'filename' [DELIMITER 'delimiter'] [CSV]")
+
     
     def _print_help(self):
         """Print available commands and their descriptions."""

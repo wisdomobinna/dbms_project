@@ -210,36 +210,56 @@ class DiskManager:
             return True
         except Exception as e:
             raise StorageError(f"Error writing index: {str(e)}")
-    
-    def insert_record(self, table_name, record):
-        """
-        Insert a record into a table.
         
-        Args:
-            table_name (str): Name of the table
-            record (dict): Record to insert
-            
-        Returns:
-            int: Record ID
-        """
+    def insert_record(self, table_name, record):
+        return self.insert_records(table_name, record)[0]
+
+    def insert_records(self, table_name, new_records):
         try:
+            if not isinstance(new_records, list):
+                new_records = [new_records]
+
             records = self.read_table(table_name)
-            
-            # Generate a new record ID
-            record_id = len(records)
-            
-            # Add record ID to the record
-            record["__id__"] = record_id
-            
-            # Append the new record
-            records.append(record)
-            
-            # Write back to disk
+            record_offset = len(records)
+
+            for i, record in enumerate(new_records):
+                record["__id__"] = record_offset + i
+                records.append(record)
+
             self.write_table(table_name, records)
-            
-            return record_id
+            return [record["__id__"] for record in new_records]
         except Exception as e:
-            raise StorageError(f"Error inserting record: {str(e)}")
+            raise StorageError(f"Error in bulk insert: {str(e)}")
+    
+    # def insert_record(self, table_name, record):
+    #     """
+    #     Insert a record into a table.
+        
+    #     Args:
+    #         table_name (str): Name of the table
+    #         record (dict): Record to insert
+            
+    #     Returns:
+    #         int: Record ID
+    #     """
+    #     try:
+    #         records = self.read_table(table_name)
+            
+    #         # Generate a new record ID
+    #         record_id = len(records)
+            
+    #         # Add record ID to the record
+    #         record["__id__"] = record_id
+            
+    #         # Append the new record
+    #         records.append(record)
+            
+    #         # Write back to disk
+    #         self.write_table(table_name, records)
+            
+    #         return record_id
+    #     except Exception as e:
+    #         raise StorageError(f"Error inserting record: {str(e)}")
     
     def update_record(self, table_name, record_id, record):
         """

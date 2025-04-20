@@ -141,6 +141,8 @@ class Executor:
                 return self._execute_show_tables(parsed_query)
             elif query_type == "DESCRIBE":
                 return self._execute_describe(parsed_query)
+            elif query_type == "BULK_INSERT":
+                return self._execute_bulk_insert(parsed_query)
             else:
                 raise ExecutionError(f"Unsupported query type: {query_type}")
         except Exception as e:
@@ -148,6 +150,32 @@ class Executor:
             if not isinstance(e, DBMSError):
                 raise DBMSError(str(e))
             raise  # Re-raise if it's already a DBMSError
+
+    def _execute_bulk_insert(self, query):
+            
+        table_name = query["table_name"]
+        values_batch = query["values"]
+
+        if not self.schema_manager.table_exists(table_name):
+            return f"Error: Table '{table_name}' does not exist"
+
+        unwrapped_records = []
+        for values in values_batch:
+            record = {}
+            for col_name, field in values.items():
+                record[col_name] = field["value"]
+            unwrapped_records.append(record)
+
+        try:
+            self.disk_manager.insert_records(table_name, unwrapped_records)
+            total_records = len(self.disk_manager.read_table(table_name))
+            self.schema_manager.set_record_count(table_name, total_records)
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+        return f"{len(unwrapped_records)} records inserted into '{table_name}'"
+
+
     
     def _execute_create_table(self, query):
         """Execute a CREATE TABLE statement."""
@@ -711,20 +739,17 @@ class Executor:
                 # We need to execute the subquery first, then handle its results
                 # This will be done later in the flow, not by directly returning here
                 pass
-            
-            # Optimize the query
-            optimized_query = self.optimizer.optimize(query)
-            
+                        
             # Store a reference to the current query for the formatter to access aliases
-            self.current_query = optimized_query
+            self.current_query = query
             
             # Execute query parts
             result = None
             
             # Check if we're dealing with a derived table (subquery in FROM)
-            if isinstance(optimized_query["table"], dict) and optimized_query["table"].get("type") == "derived_table":
+            if isinstance(query["table"], dict) and query["table"].get("type") == "derived_table":
                 # Execute the derived table subquery
-                derived_table = optimized_query["table"]
+                derived_table = query["table"]
                 subquery = derived_table["subquery"]
                 alias = derived_table["alias"]
                 
@@ -764,15 +789,15 @@ class Executor:
                 # If we have a direct derived table, we can return the results now
                 if isinstance(query, dict) and query.get("type") == "derived_table" and query.get("subquery") == subquery:
                     # Format and return the results for direct derived table handling
-                    return self._format_result(result)
+                    # return self._format_result(result)
                     
                     # Apply WHERE filter
-                    if "where" in optimized_query and optimized_query["where"]:
+                    if "where" in query and query["where"]:
                         # Filter after join using WHERE
                         filtered_result = []
                         for record_id, record in result:
                             try:
-                                if self._evaluate_condition(optimized_query["where"], record):
+                                if self._evaluate_condition(query["where"], record):
                                     filtered_result.append((record_id, record))
                             except Exception as e:
                                 # Debug the condition evaluation issue
@@ -782,26 +807,26 @@ class Executor:
                                 filtered_result.append((record_id, record))
                         result = filtered_result
             
-            elif "join" in optimized_query and optimized_query["join"]:
+            elif "join" in query and query["join"]:
                 # Execute join
-                result = self._execute_join(optimized_query)
+                result = self._execute_join(query)
                 
                 # Apply WHERE filter after join if present
-                if "where" in optimized_query and optimized_query["where"]:
+                if "where" in query and query["where"]:
                     # Filter after join using WHERE
                     filtered_result = []
                     for record_id, record in result:
-                        if self._evaluate_condition(optimized_query["where"], record):
+                        if self._evaluate_condition(query["where"], record):
                             filtered_result.append((record_id, record))
                     result = filtered_result
             else:
                 # Execute simple select
-                table_name = optimized_query["table"]
+                table_name = query["table"]
                 if isinstance(table_name, dict) and 'name' in table_name:
                     # Handle table aliases
                     real_table_name = table_name['name']
                     table_alias = table_name['alias']
-                    result = self._execute_where(real_table_name, optimized_query.get("where"))
+                    result = self._execute_where(real_table_name, query.get("where"))
                     
                     # Rename columns with table alias
                     aliased_result = []
@@ -814,28 +839,28 @@ class Executor:
                     result = aliased_result
                 else:
                     # Standard table reference
-                    where_condition = optimized_query.get("where")
+                    where_condition = query.get("where")
                     result = self._execute_where(table_name, where_condition)
             
             # Check if we have aggregate functions without GROUP BY
             # This is for simple aggregate queries like SELECT COUNT(*) FROM table
             has_aggregates = False
-            if optimized_query["projection"]["type"] == "columns":
-                for col in optimized_query["projection"]["columns"]:
+            if query["projection"]["type"] == "columns":
+                for col in query["projection"]["columns"]:
                     if col.get("type") == "aggregation":
                         has_aggregates = True
                         break
             
             # Handle aggregation functions
-            if has_aggregates or "group_by" in optimized_query:
-                if has_aggregates and not optimized_query.get("group_by"):
+            if has_aggregates or "group_by" in query:
+                if has_aggregates and not query.get("group_by"):
                     # We have aggregate functions but no GROUP BY, so create an implicit group
                     # that includes all rows
                     aggregate_result = []
                     aggregated_record = {}
                     
                     # Calculate each aggregate function
-                    for col in optimized_query["projection"]["columns"]:
+                    for col in query["projection"]["columns"]:
                         if col.get("type") == "aggregation":
                             func = col["function"]
                             arg = col["argument"]
@@ -849,25 +874,25 @@ class Executor:
                     result = aggregate_result
                 
                 # Apply GROUP BY if specified
-                elif "group_by" in optimized_query and optimized_query["group_by"]:
-                    result = self._execute_group_by(optimized_query, result)
+                elif "group_by" in query and query["group_by"]:
+                    result = self._execute_group_by(query, result)
                     
                     # Apply HAVING clause right after GROUP BY
                     # HAVING filters the grouped results before projection
-                    if "having" in optimized_query and optimized_query["having"]:
-                        result = self._execute_having(optimized_query["having"], result)
+                    if "having" in query and query["having"]:
+                        result = self._execute_having(query["having"], result)
             
             # Apply projection (must be after GROUP BY/HAVING to handle aggregations)
-            result = self._execute_projection(optimized_query, result)
+            result = self._execute_projection(query, result)
             
             # Apply sorting (ORDER BY)
-            if "order_by" in optimized_query and optimized_query["order_by"]:
-                result = self._execute_order_by(optimized_query["order_by"], result)
+            if "order_by" in query and query["order_by"]:
+                result = self._execute_order_by(query["order_by"], result)
             
             # Apply LIMIT and OFFSET
-            if "limit" in optimized_query:
-                limit = optimized_query["limit"]
-                offset = optimized_query.get("offset", 0)
+            if "limit" in query:
+                limit = query["limit"]
+                offset = query.get("offset", 0)
                 
                 # Handle LIMIT X OFFSET Y format
                 if isinstance(limit, dict) and "limit" in limit:
@@ -1315,13 +1340,15 @@ class Executor:
         
         # Handle join(s)
         if isinstance(flatten_joins, list):
+            print("hitting flatten_join")
             # Multiple joins - process one at a time
             for join_info in flatten_joins:
+                left_table = join_info.get("outer", left_table)
                 result = self._execute_single_join(left_table, join_info, result)
-                # For the next join, the left table becomes the right table of the previous join
-                left_table = join_info["table"]
         else:
             # Single join
+            print("hitting else")
+            left_table = flatten_joins.get("outer", left_table)
             result = self._execute_single_join(left_table, flatten_joins, result)
         
         return result
@@ -1479,7 +1506,8 @@ class Executor:
                         right_column = join_condition.get("right_column")
         
         result = []
-        
+        if isinstance(join_method, dict):
+            join_method = join_method.get("method", "nested-loop")
         if join_method == "nested-loop":
             # Nested Loop Join
             right_records = self.disk_manager.read_table(right_table)
@@ -1660,54 +1688,61 @@ class Executor:
                     j = j_next
         
         elif join_method == "index-nested-loop":
-            # Index Nested Loop Join
-            if self.schema_manager.index_exists(right_table, right_column):
-                for left_id, left_record in left_records:
-                    # Get the left value
-                    left_value = None
-                    if f"{left_table}.{left_column}" in left_record:
-                        left_value = left_record.get(f"{left_table}.{left_column}")
-                    else:
-                        left_value = left_record.get(left_column)
-                    
-                    # Use index to find matching right records
-                    right_ids = self.index_manager.lookup(right_table, right_column, left_value)
-                    
-                    for right_id in right_ids:
-                        try:
-                            right_record = self.disk_manager.get_record(right_table, right_id)
-                            if not right_record.get("__deleted__", False):
-                                # Create joined record
-                                joined_record = {}
-                                
-                                # Copy all left record fields with proper table prefixes
-                                for key, value in left_record.items():
-                                    if key.startswith("__"):
-                                        # Skip internal fields
-                                        continue
-                                    elif "." in key:
-                                        # Already has table prefix
-                                        joined_record[key] = value
-                                    else:
-                                        # Add table prefix for regular fields like id, name
-                                        joined_record[f"{left_table}.{key}"] = value
-                                
-                                # Add right table columns with table alias prefix
-                                for key, value in right_record.items():
-                                    if not key.startswith("__"):
-                                        joined_record[f"{right_table_alias}.{key}"] = value
-                                
-                                result.append((None, joined_record))
-                        except:
-                            # Skip deleted or non-existent records
-                            pass
-            else:
-                # Fall back to nested loop if no index
-                join_info_copy = join_info.copy()
-                join_info_copy["method"] = "nested-loop"
-                return self._execute_single_join(left_table, join_info_copy, left_records)
-        
+            # Use the values directly from the optimizer
+            outer_table = join_info.get("outer", left_table)
+            inner_table = join_info.get("inner", right_table)
+            outer_column = join_info.get("outer_column", join_condition["left_column"])
+            inner_column = join_info.get("inner_column", join_condition["right_column"])
+
+            print(f"[Join Strategy] Index-Nested-Loop | Outer: {outer_table}({outer_column}), Inner: {inner_table}({inner_column})")
+
+            outer_records = self.disk_manager.read_table(outer_table)
+            inner_records_all = self.disk_manager.read_table(inner_table)
+
+            result = []
+
+            for outer_id, outer_record in enumerate(outer_records):
+                if outer_record.get("__deleted__", False):
+                    continue
+
+                outer_value = outer_record.get(outer_column)
+                if outer_value is None:
+                    continue
+
+                print(f"[Progress] Outer record #{outer_id} - {outer_column}={outer_value}")
+
+                inner_ids = self.index_manager.lookup(inner_table, inner_column, outer_value)
+
+                for inner_id in inner_ids:
+                    try:
+                        inner_record = inner_records_all[inner_id]
+                        if inner_record.get("__deleted__", False):
+                            continue
+
+                        # Build joined record
+                        joined_record = {}
+
+                        # Add outer record fields with prefix
+                        for key, value in outer_record.items():
+                            if key.startswith("__"):
+                                continue
+                            joined_record[f"{outer_table}.{key}"] = value
+
+                        # Add inner record fields with prefix
+                        for key, value in inner_record.items():
+                            if key.startswith("__"):
+                                continue
+                            joined_record[f"{inner_table}.{key}"] = value
+
+                        result.append((None, joined_record))
+                    except Exception as e:
+                        print(f"[WARN] Failed to join record: {e}")
+                        continue
+
         return result
+
+
+
     
     def _execute_projection(self, query, records):
         """

@@ -6,7 +6,7 @@ This module handles query optimization, including:
 - Condition ordering optimization
 - Query tree transformation
 """
-
+import json
 class QueryOptimizer:
     """
     Query Optimizer class that optimizes query execution plans.
@@ -65,12 +65,22 @@ class QueryOptimizer:
                     )
             else:
                 # Handle single join
-                optimized_query["join"]["method"] = self._select_join_method(
-                    optimized_query["table"],
-                    optimized_query["join"]["table"],
-                    optimized_query["join"]["condition"]
-                )
-        
+                join = optimized_query["join"]
+                left_table = optimized_query["table"]
+                right_table = join["table"]
+                join_condition = join["condition"]
+
+                join_strategy = self._select_join_method(left_table, right_table, join_condition)
+
+                join["method"] = join_strategy["method"]
+                join["swapped"] = join_strategy.get("swapped", False)
+                join["outer"] = join_strategy.get("outer")
+                join["inner"] = join_strategy.get("inner")
+                join["outer_column"] = join_strategy.get("outer_column")
+                join["inner_column"] = join_strategy.get("inner_column")
+
+        print("Final optimized join:")
+        print(json.dumps(optimized_query.get("join", {}), indent=2))
         # Add execution plan info
         optimized_query["execution_plan"] = self._generate_execution_plan(optimized_query)
         
@@ -133,75 +143,56 @@ class QueryOptimizer:
         
         return condition
     
-    def _select_join_method(self, left_table, right_table, join_condition):
-        """
-        Select the optimal join method based on table statistics.
-        
-        Args:
-            left_table (str or dict): Left table name or dict with name/alias
-            right_table (str or dict): Right table name or dict with name/alias
-            join_condition (dict): Join condition
-            
-        Returns:
-            str: "nested-loop" or "sort-merge"
-        """
-        # Extract real table names if they're in dict format (for aliases)
-        left_table_name = left_table
-        if isinstance(left_table, dict) and 'name' in left_table:
-            left_table_name = left_table['name']
-            
-        right_table_name = right_table
-        if isinstance(right_table, dict) and 'name' in right_table:
-            right_table_name = right_table['name']
-        
-        # Make sure we have string table names
-        left_table_name = str(left_table_name) if left_table_name is not None else "unknown"
-        right_table_name = str(right_table_name) if right_table_name is not None else "unknown"
-            
-        left_key = join_condition.get("left_column", "id")  # Default to id if missing
-        right_key = join_condition.get("right_column", "id")  # Default to id if missing
-        
-        try:
-            # Check if join columns are indexed
-            left_indexed = self.schema_manager.index_exists(left_table_name, left_key)
-            right_indexed = self.schema_manager.index_exists(right_table_name, right_key)
-            
-            # Check if join columns are sorted (e.g., primary key)
-            left_is_pk = self.schema_manager.get_primary_key(left_table_name) == left_key
-            right_is_pk = self.schema_manager.get_primary_key(right_table_name) == right_key
-            
-            # Get table sizes
-            left_size = self.schema_manager.get_record_count(left_table_name)
-            right_size = self.schema_manager.get_record_count(right_table_name)
-        except Exception as e:
-            # If there's any error, default to safe values
-            print(f"Warning: Error optimizing join: {str(e)}")
-            left_indexed = False
-            right_indexed = False
-            left_is_pk = False
-            right_is_pk = False
-            left_size = 100
-            right_size = 100
-        
-        # If one table is very small, nested loop may be better
-        size_ratio = max(left_size, right_size) / max(1, min(left_size, right_size))
-        
-        # Decision logic
-        if left_indexed and right_indexed:
-            # Both tables have indexes on join columns
-            return "index-nested-loop"
-        elif left_is_pk and right_is_pk:
-            # Both join columns are primary keys (sorted)
-            return "sort-merge"
-        elif (left_is_pk or right_is_pk) and size_ratio > 10:
-            # One side is a PK and tables have very different sizes
-            return "nested-loop"
-        elif left_size + right_size < 1000:
-            # Small tables, use simple nested loop
-            return "nested-loop"
-        else:
-            # Default to sort-merge for larger tables
-            return "sort-merge"
+    def _select_join_method(self, from_table, join_table, join_condition):
+        # These are the actual tables from the parsed SELECT clause
+        left_table = from_table
+        right_table = join_table
+
+        left_key = join_condition["left_column"]
+        right_key = join_condition["right_column"]
+
+        left_size = self.schema_manager.get_record_count(left_table)
+        right_size = self.schema_manager.get_record_count(right_table)
+
+        left_indexed = self.schema_manager.index_exists(left_table, left_key)
+        right_indexed = self.schema_manager.index_exists(right_table, right_key)
+
+
+        # Prefer index-nested-loop with smaller table as outer
+        if right_indexed and left_size <= right_size:
+            print("_select_join: using right_indexed plan with smaller outer")
+            print(f"left: {left_size}, right: {right_size}")
+            return {
+                "method": "index-nested-loop",
+                "outer": left_table,
+                "inner": right_table,
+                "outer_column": left_key,
+                "inner_column": right_key,
+                "swapped": False
+            }
+        elif left_indexed and right_size < left_size:
+            print("_select_join: using left_indexed plan with smaller outer")
+            return {
+                "method": "index-nested-loop",
+                "outer": right_table,
+                "inner": left_table,
+                "outer_column": right_key,
+                "inner_column": left_key,
+                "swapped": True
+            }
+
+        # Fallback: nested-loop with left as outer
+        print("_select_join: fallback to nested-loop join")
+        return {
+            "method": "nested-loop",
+            "outer": left_table,
+            "inner": right_table,
+            "outer_column": left_key,
+            "inner_column": right_key,
+            "swapped": False
+        }
+
+
     
     def _estimate_selectivity(self, table_name, condition):
         """
@@ -322,27 +313,39 @@ class QueryOptimizer:
         # Join operation
         if "join" in query and query["join"]:
             joins_cost = 0
+            join_cost = 0
             if isinstance(query["join"], list):
                 # Multiple joins
                 joins = []
                 current_records = record_count
-                
+
                 for i, join_info in enumerate(query["join"]):
                     join_table = join_info["table"]
                     join_method = join_info.get("method", "nested-loop")
                     join_records = self.schema_manager.get_record_count(join_table)
-                    
+            
+                    if isinstance(join_method, dict):
+                        join_strategy = join_method
+                        join_method = join_strategy.get("method", "nested-loop")
+                    else:
+                        join_strategy = {}
+
                     if join_method == "nested-loop":
                         # Nested loop cost is outer * inner
+                        print("Nested looping.")
                         join_cost = current_records * join_records
                     elif join_method == "sort-merge":
+                        print("Sort merging.")
                         # Sort-merge cost is cost of sorting both tables plus merging
                         join_cost = current_records * (1 + 0.1 * (1 + min(1, 1000 * current_records))) + \
                                   join_records * (1 + 0.1 * (1 + min(1, 1000 * join_records)))
                     elif join_method == "index-nested-loop":
+                        print("Index nested looping.")
                         # Index nested loop uses index lookup for inner table
                         join_cost = current_records * 10  # Assume index lookups are 10x faster
-                    
+                    else:
+                        print(join_method)
+                        print("???")
                     condition = join_info["condition"]
                     condition_str = f"{condition.get('left_table', '')}.{condition.get('left_column', '')} = {condition.get('right_table', '')}.{condition.get('right_column', '')}"
                     
@@ -365,7 +368,8 @@ class QueryOptimizer:
                 join_table = query["join"]["table"]
                 join_method = query["join"].get("method", "nested-loop")
                 join_records = self.schema_manager.get_record_count(join_table)
-                
+                current_records = plan.get("filter", {}).get("output_records", record_count)
+
                 if join_method == "nested-loop":
                     # Nested loop cost is outer * inner
                     join_cost = plan.get("filter", {}).get("output_records", record_count) * join_records
@@ -376,7 +380,9 @@ class QueryOptimizer:
                 elif join_method == "index-nested-loop":
                     # Index nested loop uses index lookup for inner table
                     join_cost = plan.get("filter", {}).get("output_records", record_count) * 10  # Assume index lookups are 10x faster
-                
+                else:
+                    join_cost = current_records * join_records
+                    print("Worst case joining")
                 condition = query["join"]["condition"]
                 condition_str = f"{condition.get('left_table', '')}.{condition.get('left_column', '')} = {condition.get('right_table', '')}.{condition.get('right_column', '')}"
                 
