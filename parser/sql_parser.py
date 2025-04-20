@@ -26,7 +26,7 @@ class SQLParser:
         'IDENTIFIER', 'NUMBER', 'STRING_LITERAL', 'COMMA', 'SEMICOLON',
         'LPAREN', 'RPAREN', 'DOT', 'EQUALS', 'NOTEQUALS', 'LT', 'GT', 'LE', 'GE',
         'ASTERISK', 'AS', 'IN', 'LIMIT', 'OFFSET', 'GROUP', 'AUTO_INCREMENT',
-        'COUNT', 'AVG', 'SUM', 'MAX', 'MIN', 'LIKE', 'COPY'  # Aggregate functions and operators
+        'COUNT', 'AVG', 'SUM', 'MAX', 'MIN', 'LIKE', 'COPY', 'TO'  # Aggregate functions and operators
     )
     
     # Helper function to track token type
@@ -128,7 +128,8 @@ class SQLParser:
         'max': 'MAX',
         'min': 'MIN',
         'like': 'LIKE',
-        'copy': 'COPY'
+        'copy': 'COPY',
+        'to': 'TO'
     }
     
     def t_IDENTIFIER(self, t):
@@ -171,9 +172,7 @@ class SQLParser:
     
     # Build the lexer
     def build_lexer(self):
-        # Store parser output directory for PLY
-        self.output_dir = os.path.dirname(os.path.abspath(__file__))
-        self.lexer = lex.lex(module=self, outputdir=self.output_dir, optimize=0, debug=0)
+        self.lexer = lex.lex(module=self, optimize=0, debug=0)
         self.lexer.last_token_type = None
     
     # Define operator precedence and associativity
@@ -185,15 +184,19 @@ class SQLParser:
     
     # Build the parser
     def build_parser(self):
-        self.parser = yacc.yacc(module=self, outputdir=self.output_dir, optimize=0, debug=0)
+        # Set up the in_create_table flag before building the parser
+        self.in_create_table = False
+        # Enable debug mode to see parser issues
+        self.parser = yacc.yacc(module=self, optimize=0, debug=1)
     
     def __init__(self):
         """Initialize the SQL parser."""
+        # Store parser output directory for PLY
+        self.output_dir = os.path.dirname(os.path.abspath(__file__))
         self.build_lexer()
         self.build_parser()
         # Set up context tracking for lexer
         self.lexer.context = {}
-        self.in_create_table = False
     
     # Define grammar rules
     def p_statement(self, p):

@@ -369,6 +369,8 @@ def parse_args():
     parser.add_argument('--script', help='SQL script file to execute')
     parser.add_argument('--demo', action='store_true', 
                         help='Load demo data and run sample queries')
+    parser.add_argument('--test-parser', action='store_true',
+                        help='Test parser initialization only and exit')
     
     return parser.parse_args()
 
@@ -414,6 +416,18 @@ def load_demo_data(app):
 
 if __name__ == "__main__":
     args = parse_args()
+    
+    if args.test_parser:
+        print("Testing parser initialization...")
+        try:
+            from parser.sql_parser import SQLParser
+            parser = SQLParser()
+            print("Parser initialized successfully!")
+            sys.exit(0)
+        except Exception as e:
+            print(f"Parser initialization failed: {str(e)}")
+            sys.exit(1)
+    
     app = DBMSApplication(db_directory=args.db_dir)
     
     if args.demo:
