@@ -239,21 +239,82 @@ class DBMSApplication:
             
     def _execute_copy_command(self, command):
         """
-        Execute a COPY command for bulk data import.
+        Execute a COPY command for bulk data import or export.
 
-        Syntax: COPY table_name FROM 'filename' [DELIMITER 'delimiter'] [CSV]
+        Syntax: 
+        - COPY table_name FROM 'filename' [DELIMITER 'delimiter'] [CSV]
+        - COPY table_name TO 'filename' [DELIMITER 'delimiter'] [CSV]
         """
         import csv
         import re
+        import os
 
         try:
-            # Extract table name and filename
-            copy_match = re.match(r'COPY\s+(\w+)\s+FROM\s+[\'"]([^\'"]+)[\'"]', command, re.IGNORECASE)
-            if not copy_match:
-                raise ValueError("Invalid COPY command syntax. Expected: COPY table FROM 'filename' [DELIMITER 'delimiter'] [CSV]")
+            # First try to match COPY TO command
+            copy_to_match = re.match(r'COPY\s+(\w+)\s+TO\s+[\'"]([^\'"]+)[\'"]', command, re.IGNORECASE)
+            if copy_to_match:
+                # Handle COPY TO (export data)
+                table_name = copy_to_match.group(1)
+                filename = copy_to_match.group(2)
+                
+                # Confirm table exists
+                if not self.schema_manager.table_exists(table_name):
+                    raise ValueError(f"Table '{table_name}' does not exist")
+                
+                # Extract delimiter
+                delimiter = ','
+                delimiter_match = re.search(r'DELIMITER\s+[\'"]([^\'"]+)[\'"]', command, re.IGNORECASE)
+                if delimiter_match:
+                    delimiter = delimiter_match.group(1)
+                
+                is_csv = 'CSV' in command.upper()
+                columns = self.schema_manager.get_columns(table_name)
+                
+                # Get all records from the table
+                query = {
+                    "type": "SELECT",
+                    "projection": {"type": "all"},
+                    "table": table_name
+                }
+                
+                result, _ = self.run_query("SELECT * FROM " + table_name)
+                
+                # Parse the result into rows
+                rows = []
+                if isinstance(result, str) and '\n' in result:
+                    # Skip header
+                    result_rows = result.strip().split('\n')[1:]
+                    
+                    for row in result_rows:
+                        # Split by | and strip spaces
+                        cells = [cell.strip() for cell in row.split('|')[1:-1]]
+                        rows.append(cells)
+                
+                # Write data to file
+                with open(filename, 'w', newline='') as f:
+                    if is_csv:
+                        writer = csv.writer(f, delimiter=delimiter)
+                        # Write header
+                        writer.writerow([col["name"] for col in columns])
+                        # Write data
+                        writer.writerows(rows)
+                    else:
+                        # Write header
+                        f.write(delimiter.join([col["name"] for col in columns]) + '\n')
+                        # Write data
+                        for row in rows:
+                            f.write(delimiter.join(row) + '\n')
+                
+                print(f"\n COPY completed: {len(rows)} rows exported from '{table_name}' to '{filename}'")
+                return
+            
+            # If not COPY TO, then try COPY FROM
+            copy_from_match = re.match(r'COPY\s+(\w+)\s+FROM\s+[\'"]([^\'"]+)[\'"]', command, re.IGNORECASE)
+            if not copy_from_match:
+                raise ValueError("Invalid COPY command syntax. Expected: COPY table FROM 'filename' [DELIMITER 'delimiter'] [CSV] or COPY table TO 'filename' [DELIMITER 'delimiter'] [CSV]")
 
-            table_name = copy_match.group(1)
-            filename = copy_match.group(2)
+            table_name = copy_from_match.group(1)
+            filename = copy_from_match.group(2)
 
             # Confirm table exists
             if not self.schema_manager.table_exists(table_name):
@@ -334,6 +395,7 @@ class DBMSApplication:
         except Exception as e:
             print(f"Error during COPY: {str(e)}")
             print(f"Expected syntax: COPY table_name FROM 'filename' [DELIMITER 'delimiter'] [CSV]")
+            print(f"             or: COPY table_name TO 'filename' [DELIMITER 'delimiter'] [CSV]")
 
     
     def _print_help(self):
@@ -352,6 +414,7 @@ class DBMSApplication:
         print(f"  {Fore.CYAN}run{Style.RESET_ALL} <file_path> - Execute SQL statements from a file")
         print(f"  {Fore.CYAN}tables{Style.RESET_ALL} - List all available tables and their columns")
         print(f"  {Fore.CYAN}copy{Style.RESET_ALL} table_name {Fore.CYAN}from{Style.RESET_ALL} 'filename' [{Fore.CYAN}delimiter{Style.RESET_ALL} 'char'] [{Fore.CYAN}csv{Style.RESET_ALL}] - Bulk import data")
+        print(f"  {Fore.CYAN}copy{Style.RESET_ALL} table_name {Fore.CYAN}to{Style.RESET_ALL} 'filename' [{Fore.CYAN}delimiter{Style.RESET_ALL} 'char'] [{Fore.CYAN}csv{Style.RESET_ALL}] - Export data to file")
         print(f"  {Fore.CYAN}exit{Style.RESET_ALL}/{Fore.CYAN}quit{Style.RESET_ALL} - Exit the application")
         print(f"  {Fore.CYAN}help{Style.RESET_ALL} - Show this help message\n")
         
