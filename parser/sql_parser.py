@@ -26,7 +26,7 @@ class SQLParser:
         'IDENTIFIER', 'NUMBER', 'STRING_LITERAL', 'COMMA', 'SEMICOLON',
         'LPAREN', 'RPAREN', 'DOT', 'EQUALS', 'NOTEQUALS', 'LT', 'GT', 'LE', 'GE',
         'ASTERISK', 'AS', 'IN', 'LIMIT', 'OFFSET', 'GROUP', 'AUTO_INCREMENT',
-        'COUNT', 'AVG', 'SUM', 'MAX', 'MIN', 'LIKE'  # Aggregate functions and operators
+        'COUNT', 'AVG', 'SUM', 'MAX', 'MIN', 'LIKE', 'COPY'  # Aggregate functions and operators
     )
     
     # Helper function to track token type
@@ -127,7 +127,8 @@ class SQLParser:
         'sum': 'SUM',
         'max': 'MAX',
         'min': 'MIN',
-        'like': 'LIKE'
+        'like': 'LIKE',
+        'copy': 'COPY'
     }
     
     def t_IDENTIFIER(self, t):
@@ -205,7 +206,8 @@ class SQLParser:
                      | update_statement
                      | delete_statement
                      | show_tables_statement
-                     | describe_statement'''
+                     | describe_statement
+                     | copy_statement'''
         p[0] = p[1]
     
     def p_show_tables_statement(self, p):
@@ -220,6 +222,17 @@ class SQLParser:
         else:
             # Handle the table.column form
             p[0] = {'type': 'DESCRIBE', 'table_name': p[2], 'column_name': p[4]}
+            
+    def p_copy_statement(self, p):
+        '''copy_statement : COPY IDENTIFIER FROM STRING_LITERAL
+                         | COPY IDENTIFIER TO STRING_LITERAL'''
+        copy_direction = 'from' if p[3].upper() == 'FROM' else 'to'
+        p[0] = {
+            'type': 'COPY',
+            'table_name': p[2],
+            'direction': copy_direction,
+            'file_path': p[4]
+        }
     
     def p_create_table_statement(self, p):
         'create_table_statement : CREATE TABLE IDENTIFIER LPAREN column_def_list RPAREN'
@@ -887,6 +900,8 @@ class SQLParser:
             self._validate_delete(parsed_query, schema_manager)
         elif query_type == "DESCRIBE":
             self._validate_describe(parsed_query, schema_manager)
+        elif query_type == "COPY":
+            self._validate_copy(parsed_query, schema_manager)
         # SHOW TABLES doesn't need validation
     
     def _validate_create_table(self, parsed_query, schema_manager):
@@ -1166,6 +1181,29 @@ class SQLParser:
         
         if not schema_manager.table_exists(table_name):
             raise ValidationError(f"Table '{table_name}' does not exist")
+            
+    def _validate_copy(self, parsed_query, schema_manager):
+        """Validate COPY query."""
+        table_name = parsed_query["table_name"]
+        direction = parsed_query["direction"]
+        file_path = parsed_query["file_path"]
+        
+        # Check if table exists
+        if not schema_manager.table_exists(table_name):
+            raise ValidationError(f"Table '{table_name}' does not exist")
+            
+        # For COPY FROM, check if the file exists
+        if direction == 'from':
+            import os
+            if not os.path.exists(file_path):
+                raise ValidationError(f"File '{file_path}' does not exist")
+                
+        # For COPY TO, check if the directory exists
+        if direction == 'to':
+            import os
+            directory = os.path.dirname(file_path)
+            if directory and not os.path.exists(directory):
+                raise ValidationError(f"Directory '{directory}' does not exist")
     
     def _validate_condition(self, condition, table_map, schema_manager):
         """Validate WHERE/HAVING condition."""

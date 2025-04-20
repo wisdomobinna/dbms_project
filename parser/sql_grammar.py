@@ -14,7 +14,8 @@ def p_statement(parser, p):
                  | update_statement
                  | delete_statement
                  | show_tables_statement
-                 | describe_statement'''
+                 | describe_statement
+                 | copy_statement'''
     p[0] = p[1]
 
 def p_create_table_statement(parser, p):
@@ -529,6 +530,17 @@ def p_describe_statement(parser, p):
     p[0] = {
         'type': 'DESCRIBE',
         'table_name': p[2]
+    }
+    
+def p_copy_statement(parser, p):
+    '''copy_statement : COPY ID FROM STRING
+                     | COPY ID TO STRING'''
+    copy_direction = 'from' if p[3].upper() == 'FROM' else 'to'
+    p[0] = {
+        'type': 'COPY',
+        'table_name': p[2],
+        'direction': copy_direction,
+        'file_path': p[4]
     }
 
 def p_error(parser, p):
