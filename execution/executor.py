@@ -2545,7 +2545,8 @@ class Executor:
             }
 
         _, first_record = records[0]
-        columns = list(first_record.keys())
+        # Filter out internal columns that start with '__'
+        columns = [c for c in first_record.keys() if not c.startswith('__')]
         
         # Check for aliases in the projection
         column_aliases = {}

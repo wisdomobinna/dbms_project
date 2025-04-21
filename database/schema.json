@@ -71,6 +71,10 @@
     "test_users": {
       "name": "test_users",
       "record_count": 0
+    },
+    "ref_table": {
+      "name": "ref_table",
+      "record_count": 1
     }
   },
   "columns": {
@@ -352,6 +356,24 @@
         "type": "STRING",
         "primary_key": false
       }
+    ],
+    "ref_table": [
+      {
+        "name": "id",
+        "type": "INTEGER",
+        "primary_key": true,
+        "auto_increment": true
+      },
+      {
+        "name": "name",
+        "type": "STRING",
+        "primary_key": false
+      },
+      {
+        "name": "number",
+        "type": "INTEGER",
+        "primary_key": false
+      }
     ]
   },
   "indexes": {
@@ -402,6 +424,9 @@
     ],
     "test_users": [
       "user_id"
+    ],
+    "ref_table": [
+      "id"
     ]
   },
   "primary_keys": {
@@ -415,7 +440,8 @@
     "courses": "id",
     "users": "id",
     "orders": "id",
-    "test_users": "user_id"
+    "test_users": "user_id",
+    "ref_table": "id"
   },
   "foreign_keys": {
     "classrooms": {
