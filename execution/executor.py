@@ -8,6 +8,8 @@ This module handles the execution of SQL queries, including:
 - Aggregation and filtering
 """
 
+import csv
+
 from common.exceptions import ExecutionError, DBMSError
 from common.types import DataType
 
@@ -138,8 +140,10 @@ class Executor:
                 return self._execute_show_tables(parsed_query)
             elif query_type == "DESCRIBE":
                 return self._execute_describe(parsed_query)
-            elif query_type == "BULK_INSERT":
+            elif query_type == "COPY" and parsed_query["direction"] == "from":
                 return self._execute_bulk_insert(parsed_query)
+            elif query_type == "COPY" and parsed_query["direction"] == "to":
+                return self._execute_bulk_export(parsed_query)
             else:
                 raise ExecutionError(f"Unsupported query type: {query_type}")
         except Exception as e:
@@ -149,30 +153,100 @@ class Executor:
             raise  # Re-raise if it's already a DBMSError
 
     def _execute_bulk_insert(self, query):
-            
-        table_name = query["table_name"]
-        values_batch = query["values"]
 
+        table_name = query["table_name"]
+        file_path = query["file_path"]
+
+        # Table must exist
         if not self.schema_manager.table_exists(table_name):
             return f"Error: Table '{table_name}' does not exist"
 
-        unwrapped_records = []
-        for values in values_batch:
-            record = {}
-            for col_name, field in values.items():
-                record[col_name] = field["value"]
-            unwrapped_records.append(record)
+        try:
+            with open(file_path, newline='') as csvfile:
+                reader = csv.DictReader(csvfile)
+                values_batch = []
+                for row in reader:
+                    # Wrap each field like the parser does
+                    values_batch.append({k: {"type": "string", "value": v} for k, v in row.items()})
+        except Exception as e:
+            return f"Error: failed to read file. {e}"
+        
+        # 1) Gather PK and FK metadata
+        pk_col   = self.schema_manager.get_primary_key(table_name)
+        fks      = self.schema_manager.get_foreign_keys(table_name)  # dict: {col: {table, column}}
+        cols_def = {col["name"]: col for col in self.schema_manager.get_columns(table_name)}
+
+        # 2) Pre‐check each record
+        for rec in values_batch:
+            # --- PK check ---
+            if pk_col:
+                pk_val = rec[pk_col]["value"]
+                if self.schema_manager.primary_key_exists(table_name, pk_val):
+                    raise ExecutionError(f"Duplicate primary key value: {pk_val}")
+
+            # --- FK checks ---
+            for fk_col, ref in fks.items():
+                if fk_col in rec:
+                    fk_val = rec[fk_col]["value"]
+                    # skip NULL FKs
+                    if fk_val is None:
+                        continue
+                    # must exist in referenced table
+                    if not self.schema_manager.foreign_key_exists(ref["table"], ref["column"], fk_val):
+                        raise ExecutionError(
+                            f"Foreign key violation: '{fk_val}' not found in "
+                            f"{ref['table']}.{ref['column']}"
+                        )
+
+        # 3) Unwrap into simple dicts for disk_manager
+        unwrapped = [
+            {col: rec[col]["value"] for col in rec}
+            for rec in values_batch
+        ]
 
         try:
-            self.disk_manager.insert_records(table_name, unwrapped_records)
-            total_records = len(self.disk_manager.read_table(table_name))
-            self.schema_manager.set_record_count(table_name, total_records)
+            # 4) Batch‐write all records
+            self.disk_manager.insert_records(table_name, unwrapped)
+
+            # 5) Update record count in schema
+            total = len(self.disk_manager.read_table(table_name))
+            self.schema_manager.set_record_count(table_name, total)
+
+            # 6) Rebuild any indexes on this table so they include the new rows
+            for col_def in self.schema_manager.get_columns(table_name):
+                col_name = col_def["name"]
+                if self.schema_manager.index_exists(table_name, col_name):
+                    # you can also do incremental updates here if you prefer
+                    self.index_manager.rebuild_index(table_name, col_name)
+
         except Exception as e:
             return f"Error: {str(e)}"
 
-        return f"{len(unwrapped_records)} records inserted into '{table_name}'"
+        return f"{len(unwrapped)} records inserted into '{table_name}'"
 
+    def _execute_bulk_export(self, query):
+        table_name = query["table_name"]
+        file_path = query["file_path"]
 
+        try:
+            records = self.disk_manager.read_table(table_name)
+            if not records:
+                return f"Exported 0 records to '{file_path}'"
+
+            # Get column headers in consistent order
+            headers = list(records[0].keys())
+
+            with open(file_path, mode="w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=headers)
+                writer.writeheader()
+                for record in records:
+                    # Write only non-deleted rows
+                    if not record.get("__deleted__", False):
+                        writer.writerow({k: v for k, v in record.items() if not k.startswith("__")})
+
+            return f"Exported {len(records)} records to '{file_path}'"
+        except Exception as e:
+            return f"Error exporting to file: {e}"
     
     def _execute_create_table(self, query):
         """Execute a CREATE TABLE statement."""
@@ -728,182 +802,126 @@ class Executor:
             raise ExecutionError(f"Error deleting records: {str(e)}")
     
     def _execute_select(self, query):
-        """Execute a SELECT statement."""
-        try:
-            # Handle derived table directly by recognizing its structure
-            # If this is a derived table structure, prepare to execute the subquery
-            if isinstance(query, dict) and query.get("type") == "derived_table":
-                # We need to execute the subquery first, then handle its results
-                # This will be done later in the flow, not by directly returning here
-                pass
-                        
-            # Store a reference to the current query for the formatter to access aliases
-            self.current_query = query
+        """
+        Execute a SELECT statement with predicate push‑down.
+        """
+        # 1) Pull off and clear the WHERE clause
+        where = query.pop("where", None)
+        
+        # 2) Remember for aliasing in _format_result
+        self.current_query = query
+
+        # 3) Identify FROM and JOIN info
+        left_tbl  = query["table"]
+        join_info = query.get("join")
+
+        # If there's no join at all, just filter and skip to projection
+        if not join_info:
+            filtered = self._execute_where(left_tbl, where)
+            joined  = filtered  # treat as "joined" for the rest of the flow
+
+        else:
+            # 4) Gather table names and aliases
+            right_tbl   = join_info["table"]
+            left_alias  = left_tbl.get("alias") if isinstance(left_tbl, dict) else left_tbl
+            right_alias = join_info.get("alias", right_tbl)
+
+            # 5) Helpers to detect single‑table predicates
+            def only_for(cond, alias):
+                if not cond:
+                    return False
+                t = cond["type"]
+                if t == "and":
+                    return only_for(cond["left"], alias) and only_for(cond["right"], alias)
+                if t == "or":
+                    # don't push OR across tables
+                    return False
+                # leaf comparison
+                name = cond["left"].get("name","")
+                return name.startswith(alias + ".")
             
-            # Execute query parts
-            result = None
-            
-            # Check if we're dealing with a derived table (subquery in FROM)
-            if isinstance(query["table"], dict) and query["table"].get("type") == "derived_table":
-                # Execute the derived table subquery
-                derived_table = query["table"]
-                subquery = derived_table["subquery"]
-                alias = derived_table["alias"]
-                
-                # Save original query to restore later
-                original_query = self.current_query
-                
-                try:
-                    # Execute the subquery
-                    subquery_result = self._execute_select(subquery)
-                finally:
-                    # Restore original query reference
-                    self.current_query = original_query
-                
-                # Convert the subquery result to records with the correct alias
-                if isinstance(subquery_result, dict) and "rows" in subquery_result and "columns" in subquery_result:
-                    columns = subquery_result["columns"]
-                    rows = subquery_result["rows"]
-                    
-                    # Create result records with the proper alias
-                    aliased_records = []
-                    for row in rows:
-                        # Convert row tuple to a dictionary with column names as keys
-                        row_dict = {}
-                        for i, col in enumerate(columns):
-                            if i < len(row):  # Make sure we have enough values
-                                value = row[i]
-                                # Store with both the aliased name and the original column name
-                                # for compatibility with different query styles
-                                row_dict[f"{alias}.{col}"] = value
-                                row_dict[col] = value  # Also keep the original column name
-                        
-                        # Add to results
-                        aliased_records.append((None, row_dict))
-                    
-                    result = aliased_records
-                    
-                # If we have a direct derived table, we can return the results now
-                if isinstance(query, dict) and query.get("type") == "derived_table" and query.get("subquery") == subquery:
-                    # Format and return the results for direct derived table handling
-                    # return self._format_result(result)
-                    
-                    # Apply WHERE filter
-                    if "where" in query and query["where"]:
-                        # Filter after join using WHERE
-                        filtered_result = []
-                        for record_id, record in result:
-                            try:
-                                if self._evaluate_condition(query["where"], record):
-                                    filtered_result.append((record_id, record))
-                            except Exception as e:
-                                # Debug the condition evaluation issue
-                                print(f"WARNING: Condition evaluation error: {e}")
-                                # Let's be permissive and include records that cause errors
-                                # to avoid empty results due to minor issues
-                                filtered_result.append((record_id, record))
-                        result = filtered_result
-            
-            elif "join" in query and query["join"]:
-                # Execute join
-                result = self._execute_join(query)
-                
-                # Apply WHERE filter after join if present
-                if "where" in query and query["where"]:
-                    # Filter after join using WHERE
-                    filtered_result = []
-                    for record_id, record in result:
-                        if self._evaluate_condition(query["where"], record):
-                            filtered_result.append((record_id, record))
-                    result = filtered_result
-            else:
-                # Execute simple select
-                table_name = query["table"]
-                if isinstance(table_name, dict) and 'name' in table_name:
-                    # Handle table aliases
-                    real_table_name = table_name['name']
-                    table_alias = table_name['alias']
-                    result = self._execute_where(real_table_name, query.get("where"))
-                    
-                    # Rename columns with table alias
-                    aliased_result = []
-                    for record_id, record in result:
-                        aliased_record = {}
-                        for col_name, value in record.items():
-                            if not col_name.startswith('__'):  # Skip internal fields
-                                aliased_record[f"{table_alias}.{col_name}"] = value
-                        aliased_result.append((record_id, aliased_record))
-                    result = aliased_result
-                else:
-                    # Standard table reference
-                    where_condition = query.get("where")
-                    result = self._execute_where(table_name, where_condition)
-            
-            # Check if we have aggregate functions without GROUP BY
-            # This is for simple aggregate queries like SELECT COUNT(*) FROM table
-            has_aggregates = False
-            if query["projection"]["type"] == "columns":
+            # 6) Split WHERE into left_only, right_only, and join_only
+            def split(cond):
+                if not cond:
+                    return None, None, None
+                if cond["type"] == "and":
+                    L1, R1, J1 = split(cond["left"])
+                    L2, R2, J2 = split(cond["right"])
+                    left  = {"type":"and","left":L1,"right":L2} if (L1 or L2) else None
+                    right = {"type":"and","left":R1,"right":R2} if (R1 or R2) else None
+                    join  = {"type":"and","left":J1,"right":J2} if (J1 or J2) else None
+                    return left, right, join
+                # leaf
+                if only_for(cond, left_alias):
+                    return cond, None, None
+                if only_for(cond, right_alias):
+                    return None, cond, None
+                return None, None, cond
+
+            left_where, right_where, join_where = split(where)
+
+            # 7) Apply per‑table filters early
+            left_recs  = self._execute_where(left_tbl,  left_where)
+            right_recs = self._execute_where(right_tbl, right_where)
+
+            # 8) Inject the pre‑filtered lists so _execute_join will use them
+            query["_left_records"]  = left_recs
+            query["_right_records"] = right_recs
+
+            # 9) Do the join
+            joined = self._execute_join(query)
+
+            # 10) Apply any remaining cross‑table predicate
+            if join_where:
+                joined = [
+                    (rid, rec) for rid,rec in joined
+                    if self._evaluate_condition(join_where, rec)
+                ]
+
+        # 11) Now handle GROUP BY / HAVING / projection / ORDER BY / LIMIT as before:
+        #     (you can paste in your existing code from here down)
+
+        # -- GROUP BY / aggregation --
+        has_agg = False
+        if query["projection"]["type"] == "columns":
+            for col in query["projection"]["columns"]:
+                if col.get("type") == "aggregation":
+                    has_agg = True
+                    break
+
+        if has_agg or "group_by" in query:
+            if has_agg and not query.get("group_by"):
+                # implicit global aggregate
+                agg_record = {}
                 for col in query["projection"]["columns"]:
                     if col.get("type") == "aggregation":
-                        has_aggregates = True
-                        break
-            
-            # Handle aggregation functions
-            if has_aggregates or "group_by" in query:
-                if has_aggregates and not query.get("group_by"):
-                    # We have aggregate functions but no GROUP BY, so create an implicit group
-                    # that includes all rows
-                    aggregate_result = []
-                    aggregated_record = {}
-                    
-                    # Calculate each aggregate function
-                    for col in query["projection"]["columns"]:
-                        if col.get("type") == "aggregation":
-                            func = col["function"]
-                            arg = col["argument"]
-                            alias = col.get("alias", f"{func}({arg})")
-                            
-                            # Calculate the aggregate value
-                            agg_value = self._calculate_aggregate(func, arg, result)
-                            aggregated_record[alias] = agg_value
-                    
-                    aggregate_result.append((None, aggregated_record))
-                    result = aggregate_result
-                
-                # Apply GROUP BY if specified
-                elif "group_by" in query and query["group_by"]:
-                    result = self._execute_group_by(query, result)
-                    
-                    # Apply HAVING clause right after GROUP BY
-                    # HAVING filters the grouped results before projection
-                    if "having" in query and query["having"]:
-                        result = self._execute_having(query["having"], result)
-            
-            # Apply projection (must be after GROUP BY/HAVING to handle aggregations)
-            result = self._execute_projection(query, result)
-            
-            # Apply sorting (ORDER BY)
-            if "order_by" in query and query["order_by"]:
-                result = self._execute_order_by(query["order_by"], result)
-            
-            # Apply LIMIT and OFFSET
-            if "limit" in query:
-                limit = query["limit"]
-                offset = query.get("offset", 0)
-                
-                # Handle LIMIT X OFFSET Y format
-                if isinstance(limit, dict) and "limit" in limit:
-                    # Handle {limit: X, offset: Y} format from parser
-                    offset = limit.get("offset", 0)
-                    limit = limit["limit"]
-                    
-                # Apply limit and offset to the result records
-                result = self._apply_limit_offset(result, limit, offset)
-            
-            # Format the result
-            return self._format_result(result)
-        except Exception as e:
-            raise ExecutionError(f"Error executing SELECT: {str(e)}")
+                        alias = col.get("alias", f"{col['function']}({col['argument']})")
+                        agg_record[alias] = self._calculate_aggregate(col["function"], col["argument"], joined)
+                joined = [(None, agg_record)]
+            elif query.get("group_by"):
+                joined = self._execute_group_by(query, joined)
+                if query.get("having"):
+                    joined = self._execute_having(query["having"], joined)
+
+        # -- Projection --
+        joined = self._execute_projection(query, joined)
+
+        # -- ORDER BY --
+        if query.get("order_by"):
+            joined = self._execute_order_by(query["order_by"], joined)
+
+        # -- LIMIT / OFFSET --
+        if "limit" in query:
+            limit  = query["limit"]
+            offset = query.get("offset", 0)
+            if isinstance(limit, dict):
+                offset = limit.get("offset", 0)
+                limit  = limit["limit"]
+            joined = self._apply_limit_offset(joined, limit, offset)
+
+        # 12) Finally, format to {columns, rows}
+        return self._format_result(joined)
+
     
     def _apply_limit_offset(self, records, limit, offset=0):
         """Apply LIMIT and OFFSET to result set."""

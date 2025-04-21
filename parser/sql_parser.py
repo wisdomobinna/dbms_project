@@ -11,6 +11,8 @@ import ply.yacc as yacc
 from common.exceptions import ParseError, ValidationError
 from common.types import DataType
 
+DEFAULT_FILEPATH = '/app/main/data_files'
+
 class SQLParser:
     """
     SQL Parser class that converts SQL strings into structured representations
@@ -232,11 +234,14 @@ class SQLParser:
         '''copy_statement : COPY IDENTIFIER FROM STRING_LITERAL
                          | COPY IDENTIFIER TO STRING_LITERAL'''
         copy_direction = 'from' if p[3].upper() == 'FROM' else 'to'
+        raw_path = os.path.basename(p[4])  # sanitize
+        full_path = os.path.join(DEFAULT_FILEPATH, raw_path)
+
         p[0] = {
             'type': 'COPY',
             'table_name': p[2],
             'direction': copy_direction,
-            'file_path': p[4]
+            'file_path': full_path
         }
     
     def p_create_table_statement(self, p):
@@ -1215,13 +1220,11 @@ class SQLParser:
             
         # For COPY FROM, check if the file exists
         if direction == 'from':
-            import os
             if not os.path.exists(file_path):
                 raise ValidationError(f"File '{file_path}' does not exist")
                 
         # For COPY TO, check if the directory exists
         if direction == 'to':
-            import os
             directory = os.path.dirname(file_path)
             if directory and not os.path.exists(directory):
                 raise ValidationError(f"Directory '{directory}' does not exist")
