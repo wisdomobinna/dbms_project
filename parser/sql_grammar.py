@@ -42,6 +42,10 @@ def p_create_table_statement(parser, p):
         if col_def.get('auto_increment'):
             column_def['auto_increment'] = True
             
+        # Include not_null attribute if present
+        if col_def.get('not_null'):
+            column_def['not_null'] = True
+            
         columns.append(column_def)
     
     p[0] = {
@@ -64,9 +68,21 @@ def p_column_def(parser, p):
     '''column_def : ID INTEGER
                   | ID INTEGER PRIMARY KEY
                   | ID INTEGER AUTO_INCREMENT
+                  | ID INTEGER NOT NULL
                   | ID INTEGER PRIMARY KEY AUTO_INCREMENT
                   | ID INTEGER AUTO_INCREMENT PRIMARY KEY
-                  | ID VARCHAR LPAREN NUMBER RPAREN'''
+                  | ID INTEGER NOT NULL PRIMARY KEY
+                  | ID INTEGER PRIMARY KEY NOT NULL
+                  | ID INTEGER NOT NULL AUTO_INCREMENT
+                  | ID INTEGER AUTO_INCREMENT NOT NULL
+                  | ID INTEGER PRIMARY KEY NOT NULL AUTO_INCREMENT
+                  | ID INTEGER PRIMARY KEY AUTO_INCREMENT NOT NULL
+                  | ID INTEGER NOT NULL PRIMARY KEY AUTO_INCREMENT
+                  | ID INTEGER NOT NULL AUTO_INCREMENT PRIMARY KEY
+                  | ID INTEGER AUTO_INCREMENT PRIMARY KEY NOT NULL
+                  | ID INTEGER AUTO_INCREMENT NOT NULL PRIMARY KEY
+                  | ID VARCHAR LPAREN NUMBER RPAREN
+                  | ID VARCHAR LPAREN NUMBER RPAREN NOT NULL'''
     column_def = {
         'name': p[1],
         'type': DataType.INTEGER if p[2] == 'INTEGER' else DataType.STRING
@@ -75,6 +91,7 @@ def p_column_def(parser, p):
     # Process options - they can appear in any order
     has_primary_key = False
     has_auto_increment = False
+    has_not_null = False
     
     for i in range(3, len(p)):
         if p[i] == 'PRIMARY' and i+1 < len(p) and p[i+1] == 'KEY':
@@ -83,6 +100,9 @@ def p_column_def(parser, p):
         elif p[i] == 'AUTO_INCREMENT':
             column_def['auto_increment'] = True
             has_auto_increment = True
+        elif p[i] == 'NOT' and i+1 < len(p) and p[i+1] == 'NULL':
+            column_def['not_null'] = True
+            has_not_null = True
     
     p[0] = column_def
 

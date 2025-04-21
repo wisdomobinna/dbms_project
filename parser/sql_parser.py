@@ -26,7 +26,7 @@ class SQLParser:
         'IDENTIFIER', 'NUMBER', 'STRING_LITERAL', 'COMMA', 'SEMICOLON',
         'LPAREN', 'RPAREN', 'DOT', 'EQUALS', 'NOTEQUALS', 'LT', 'GT', 'LE', 'GE',
         'ASTERISK', 'AS', 'IN', 'LIMIT', 'OFFSET', 'GROUP', 'AUTO_INCREMENT',
-        'COUNT', 'AVG', 'SUM', 'MAX', 'MIN', 'LIKE', 'COPY', 'TO'  # Aggregate functions and operators
+        'COUNT', 'AVG', 'SUM', 'MAX', 'MIN', 'LIKE', 'COPY', 'TO', 'NOT', 'NULL'  # Aggregate functions and operators
     )
     
     # Helper function to track token type
@@ -129,7 +129,9 @@ class SQLParser:
         'min': 'MIN',
         'like': 'LIKE',
         'copy': 'COPY',
-        'to': 'TO'
+        'to': 'TO',
+        'not': 'NOT',
+        'null': 'NULL'
     }
     
     def t_IDENTIFIER(self, t):
@@ -300,7 +302,8 @@ class SQLParser:
                 'name': p[1],
                 'data_type': DataType.INTEGER if p[2].lower() == 'integer' else DataType.STRING,
                 'primary_key': constraints['primary_key'] if isinstance(constraints, dict) else constraints,
-                'auto_increment': constraints.get('auto_increment', False) if isinstance(constraints, dict) else False
+                'auto_increment': constraints.get('auto_increment', False) if isinstance(constraints, dict) else False,
+                'not_null': constraints.get('not_null', False) if isinstance(constraints, dict) else False
             }
         else:  # Foreign key definition
             p[0] = p[1]
@@ -311,12 +314,24 @@ class SQLParser:
     def p_primary_key_opt(self, p):
         '''primary_key_opt : PRIMARY KEY
                           | PRIMARY KEY AUTO_INCREMENT
+                          | PRIMARY KEY NOT NULL
+                          | PRIMARY KEY AUTO_INCREMENT NOT NULL
+                          | PRIMARY KEY NOT NULL AUTO_INCREMENT
                           | AUTO_INCREMENT
                           | AUTO_INCREMENT PRIMARY KEY
+                          | AUTO_INCREMENT NOT NULL
+                          | AUTO_INCREMENT PRIMARY KEY NOT NULL
+                          | AUTO_INCREMENT NOT NULL PRIMARY KEY
+                          | NOT NULL
+                          | NOT NULL PRIMARY KEY
+                          | NOT NULL AUTO_INCREMENT
+                          | NOT NULL PRIMARY KEY AUTO_INCREMENT
+                          | NOT NULL AUTO_INCREMENT PRIMARY KEY
                           | '''
         # Initialize flags
         is_primary_key = False
         is_auto_increment = False
+        is_not_null = False
         
         # Process tokens one by one
         for i in range(1, len(p)):
@@ -324,11 +339,14 @@ class SQLParser:
                 is_primary_key = True
             elif p[i].upper() == 'AUTO_INCREMENT':
                 is_auto_increment = True
+            elif p[i].upper() == 'NOT' and i+1 < len(p) and p[i+1].upper() == 'NULL':
+                is_not_null = True
         
-        # Return a dictionary with both flags
+        # Return a dictionary with all flags
         p[0] = {
             'primary_key': is_primary_key,
-            'auto_increment': is_auto_increment
+            'auto_increment': is_auto_increment,
+            'not_null': is_not_null
         }
     
     def p_foreign_key_def(self, p):
