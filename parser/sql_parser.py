@@ -1188,7 +1188,8 @@ class SQLParser:
         
         # Validate WHERE clause if present
         if parsed_query["where"]:
-            self._validate_condition(parsed_query["where"], table_name, schema_manager)
+            table_map = {table_name: table_name}
+            self._validate_condition(parsed_query["where"], table_map, schema_manager)
     
     def _validate_delete(self, parsed_query, schema_manager):
         """Validate DELETE query."""
@@ -1199,7 +1200,8 @@ class SQLParser:
         
         # Validate WHERE clause if present
         if parsed_query["where"]:
-            self._validate_condition(parsed_query["where"], table_name, schema_manager)
+            table_map = {table_name: table_name}
+            self._validate_condition(parsed_query["where"], table_map, schema_manager)
     
     def _validate_describe(self, parsed_query, schema_manager):
         """Validate DESCRIBE query."""

@@ -153,76 +153,120 @@ class Executor:
             raise  # Re-raise if it's already a DBMSError
 
     def _execute_bulk_insert(self, query):
+        import os
+        import csv
 
         table_name = query["table_name"]
         file_path = query["file_path"]
 
-        # Table must exist
         if not self.schema_manager.table_exists(table_name):
             return f"Error: Table '{table_name}' does not exist"
 
+        # Load table metadata
+        pk_col = self.schema_manager.get_primary_key(table_name)
+        auto_increment = False
+        columns = self.schema_manager.get_columns(table_name)
+        col_defs = {col["name"]: col for col in columns}
+        if pk_col and col_defs[pk_col].get("auto_increment"):
+            auto_increment = True
+
+        # Step 1: Read CSV as wrapped rows
         try:
             with open(file_path, newline='') as csvfile:
                 reader = csv.DictReader(csvfile)
                 values_batch = []
+
                 for row in reader:
-                    # Wrap each field like the parser does
-                    values_batch.append({k: {"type": "string", "value": v} for k, v in row.items()})
+                    record = {}
+                    for col in columns:
+                        col_name = col["name"]
+                        col_type = col["type"]
+                        raw_val = row.get(col_name, "").strip()
+
+                        if raw_val == "":
+                            value = None
+                        elif col_type == DataType.INTEGER:
+                            try:
+                                value = int(raw_val)
+                            except ValueError:
+                                return f"Error: Invalid INTEGER value for column '{col_name}': '{raw_val}'"
+                        else:
+                            value = raw_val
+
+                        record[col_name] = {
+                            "type": "integer" if col_type == DataType.INTEGER else "string",
+                            "value": value
+                        }
+
+                    values_batch.append(record)
         except Exception as e:
             return f"Error: failed to read file. {e}"
         
-        # 1) Gather PK and FK metadata
-        pk_col   = self.schema_manager.get_primary_key(table_name)
-        fks      = self.schema_manager.get_foreign_keys(table_name)  # dict: {col: {table, column}}
-        cols_def = {col["name"]: col for col in self.schema_manager.get_columns(table_name)}
+        # Step 2: Prepare to assign auto-increment ID and check for PK collision
+        existing_rows = self.disk_manager.read_table(table_name)
+        existing_pks = set()
+        max_id = 0
 
-        # 2) Pre‐check each record
-        for rec in values_batch:
-            # --- PK check ---
-            if pk_col:
-                pk_val = rec[pk_col]["value"]
-                if self.schema_manager.primary_key_exists(table_name, pk_val):
-                    raise ExecutionError(f"Duplicate primary key value: {pk_val}")
-
-            # --- FK checks ---
-            for fk_col, ref in fks.items():
-                if fk_col in rec:
-                    fk_val = rec[fk_col]["value"]
-                    # skip NULL FKs
-                    if fk_val is None:
+        if pk_col:
+            for row in existing_rows:
+                if pk_col in row:
+                    try:
+                        val = int(row[pk_col])
+                        existing_pks.add(val)
+                        max_id = max(max_id, val)
+                    except ValueError:
                         continue
-                    # must exist in referenced table
-                    if not self.schema_manager.foreign_key_exists(ref["table"], ref["column"], fk_val):
-                        raise ExecutionError(
-                            f"Foreign key violation: '{fk_val}' not found in "
-                            f"{ref['table']}.{ref['column']}"
-                        )
 
-        # 3) Unwrap into simple dicts for disk_manager
-        unwrapped = [
-            {col: rec[col]["value"] for col in rec}
-            for rec in values_batch
-        ]
+        new_pks = set()
+        unwrapped = []
+
+        for rec in values_batch:
+            # Handle auto-increment if needed
+            if pk_col:
+                pk_val_str = rec.get(pk_col, {}).get("value", "")
+
+                if not pk_val_str and auto_increment:
+                    max_id += 1
+                    rec[pk_col] = {"type": "integer", "value": max_id}
+                else:
+                    try:
+                        rec[pk_col]["value"] = int(pk_val_str)
+                    except ValueError:
+                        return f"Error: Invalid integer value for primary key '{pk_col}': '{pk_val_str}'"
+
+                pk_val = rec[pk_col]["value"]
+                if pk_val in existing_pks or pk_val in new_pks:
+                    return f"Error: Duplicate primary key value: {pk_val}"
+                new_pks.add(pk_val)
+
+            # Build unwrapped row
+            new_row = {}
+            for col_name, value in rec.items():
+                try:
+                    if col_defs[col_name]["type"] == "INTEGER":
+                        new_row[col_name] = int(value["value"])
+                    else:
+                        new_row[col_name] = str(value["value"])
+                except Exception:
+                    return f"Error: Invalid value for column '{col_name}'"
+            unwrapped.append(new_row)
 
         try:
-            # 4) Batch‐write all records
+            # Write to disk
             self.disk_manager.insert_records(table_name, unwrapped)
+            self.schema_manager.set_record_count(table_name, len(existing_rows) + len(unwrapped))
 
-            # 5) Update record count in schema
-            total = len(self.disk_manager.read_table(table_name))
-            self.schema_manager.set_record_count(table_name, total)
-
-            # 6) Rebuild any indexes on this table so they include the new rows
-            for col_def in self.schema_manager.get_columns(table_name):
+            # Rebuild indexes
+            for col_def in columns:
                 col_name = col_def["name"]
                 if self.schema_manager.index_exists(table_name, col_name):
-                    # you can also do incremental updates here if you prefer
                     self.index_manager.rebuild_index(table_name, col_name)
 
         except Exception as e:
             return f"Error: {str(e)}"
 
         return f"{len(unwrapped)} records inserted into '{table_name}'"
+
 
     def _execute_bulk_export(self, query):
         table_name = query["table_name"]
@@ -2563,7 +2607,8 @@ class Executor:
             }
 
         _, first_record = records[0]
-        columns = list(first_record.keys())
+        # Filter out internal columns that start with '__'
+        columns = [c for c in first_record.keys() if not c.startswith('__')]
         
         # Check for aliases in the projection
         column_aliases = {}

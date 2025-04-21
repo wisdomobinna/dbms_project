@@ -72,9 +72,9 @@
       "name": "test_users",
       "record_count": 0
     },
-    "team": {
-      "name": "team",
-      "record_count": 0
+    "ref_table": {
+      "name": "ref_table",
+      "record_count": 1
     }
   },
   "columns": {
@@ -357,26 +357,21 @@
         "primary_key": false
       }
     ],
-    "team": [
+    "ref_table": [
       {
-        "name": "user_id",
+        "name": "id",
         "type": "INTEGER",
         "primary_key": true,
         "auto_increment": true
       },
       {
-        "name": "username",
+        "name": "name",
         "type": "STRING",
         "primary_key": false
       },
       {
-        "name": "age",
+        "name": "number",
         "type": "INTEGER",
-        "primary_key": false
-      },
-      {
-        "name": "email",
-        "type": "STRING",
         "primary_key": false
       }
     ]
@@ -431,8 +426,8 @@
     "test_users": [
       "user_id"
     ],
-    "team": [
-      "user_id"
+    "ref_table": [
+      "id"
     ]
   },
   "primary_keys": {
@@ -448,7 +443,7 @@
     "orders": "id",
     "thousand_1": "col1",
     "test_users": "user_id",
-    "team": "user_id"
+    "ref_table": "id"
   },
   "foreign_keys": {
     "classrooms": {
