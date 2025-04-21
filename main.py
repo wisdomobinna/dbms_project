@@ -26,6 +26,8 @@ from common.types import DataType
 # Initialize colorama
 init()
 
+DEFAULT_FILEPATH = 'app/main/data_files'
+
 class DBMSApplication:
     """Main DBMS application class that coordinates all components."""
     
@@ -249,6 +251,20 @@ class DBMSApplication:
         import re
         import os
 
+        print(command)
+        file_name = command["file_path"]
+        direction = command["direction"]
+        file_path = os.path.join(DEFAULT_FILEPATH, file_name)
+
+
+        if direction == "from":
+            return self._execute_bulk_insert({
+                "type": "COPY",
+                "table_name": table_name,
+                "file_path": file_path,
+                "direction": direction
+            })
+    
         try:
             # First try to match COPY TO command
             copy_to_match = re.match(r'COPY\s+(\w+)\s+TO\s+[\'"]([^\'"]+)[\'"]', command, re.IGNORECASE)
@@ -368,7 +384,7 @@ class DBMSApplication:
 
                     if len(values_batch) >= batch_size:
                         result = self.executor.execute({
-                            "type": "BULK_INSERT",
+                            "type": "COPY",
                             "table_name": table_name,
                             "values": values_batch
                         })
@@ -380,7 +396,7 @@ class DBMSApplication:
                         values_batch = []
             if values_batch:
                 result = self.executor.execute({
-                    "type": "BULK_INSERT",
+                    "type": "COPY",
                     "table_name": table_name,
                     "values": values_batch
                 })

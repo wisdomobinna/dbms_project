@@ -10,7 +10,7 @@
     },
     "buildings": {
       "name": "buildings",
-      "record_count": 1
+      "record_count": 2
     },
     "classrooms": {
       "name": "classrooms",
@@ -36,14 +36,6 @@
       "name": "enrollments",
       "record_count": 20
     },
-    "thousand_i": {
-      "name": "thousand_i",
-      "record_count": 1000
-    },
-    "thousand_1": {
-      "name": "thousand_1",
-      "record_count": 1000
-    },
     "hun_thousand_i": {
       "name": "hun_thousand_i",
       "record_count": 100000
@@ -67,6 +59,14 @@
     "orders": {
       "name": "orders",
       "record_count": 0
+    },
+    "thousand_i": {
+      "name": "thousand_i",
+      "record_count": 1
+    },
+    "thousand_1": {
+      "name": "thousand_1",
+      "record_count": 1000
     },
     "test_users": {
       "name": "test_users",
@@ -233,30 +233,6 @@
         "primary_key": false
       }
     ],
-    "thousand_i": [
-      {
-        "name": "col1",
-        "type": "INTEGER",
-        "primary_key": false
-      },
-      {
-        "name": "col2",
-        "type": "INTEGER",
-        "primary_key": false
-      }
-    ],
-    "thousand_1": [
-      {
-        "name": "col1",
-        "type": "INTEGER",
-        "primary_key": false
-      },
-      {
-        "name": "col2",
-        "type": "INTEGER",
-        "primary_key": false
-      }
-    ],
     "hun_thousand_i": [
       {
         "name": "col1",
@@ -331,6 +307,30 @@
       {
         "name": "item",
         "type": "STRING",
+        "primary_key": false
+      }
+    ],
+    "thousand_i": [
+      {
+        "name": "col1",
+        "type": "INTEGER",
+        "primary_key": false
+      },
+      {
+        "name": "col2",
+        "type": "INTEGER",
+        "primary_key": false
+      }
+    ],
+    "thousand_1": [
+      {
+        "name": "col1",
+        "type": "INTEGER",
+        "primary_key": true
+      },
+      {
+        "name": "col2",
+        "type": "INTEGER",
         "primary_key": false
       }
     ],
@@ -410,9 +410,6 @@
     "million_1": [
       "col1"
     ],
-    "thousand_1": [
-      "col1"
-    ],
     "hun_thousand_1": [
       "col1"
     ],
@@ -422,6 +419,10 @@
     "million_i": [
       "col1"
     ],
+    "thousand_1": [
+      "col1"
+    ],
+
     "test_users": [
       "user_id"
     ],
@@ -440,6 +441,7 @@
     "courses": "id",
     "users": "id",
     "orders": "id",
+    "thousand_1": "col1",
     "test_users": "user_id",
     "ref_table": "id"
   },
