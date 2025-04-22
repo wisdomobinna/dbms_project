@@ -3,4 +3,4 @@ node_modules/
 
 *.idx
 *.dat
-.json
+*.json
