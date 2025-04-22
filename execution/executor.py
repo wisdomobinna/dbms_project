@@ -225,9 +225,11 @@ class Executor:
             if pk_col:
                 pk_val_str = rec.get(pk_col, {}).get("value", "")
 
-                if not pk_val_str and auto_increment:
+                if (pk_val_str is None or pk_val_str == "") and auto_increment:
                     max_id += 1
                     rec[pk_col] = {"type": "integer", "value": max_id}
+                elif pk_val_str is None or pk_val_str == "":
+                    return f"Error: Missing value for primary key '{pk_col}'"
                 else:
                     try:
                         rec[pk_col]["value"] = int(pk_val_str)
@@ -243,7 +245,7 @@ class Executor:
             new_row = {}
             for col_name, value in rec.items():
                 try:
-                    if col_defs[col_name]["type"] == "INTEGER":
+                    if col_defs[col_name]["type"] == DataType.INTEGER:
                         new_row[col_name] = int(value["value"])
                     else:
                         new_row[col_name] = str(value["value"])
@@ -370,25 +372,6 @@ class Executor:
             return f"Index dropped on '{table_name}.{column_name}'"
         except Exception as e:
             raise ExecutionError(f"Error dropping index: {str(e)}")
-    
-    # def _execute_show_tables(self, query):
-    #     """Execute a SHOW TABLES statement."""
-    #     try:
-    #         # Get the list of tables from the schema manager
-    #         tables = self.schema_manager.get_tables()
-            
-    #         if not tables:
-    #             return "No tables exist in the database."
-            
-    #         # Format the result
-    #         result = "Tables in the database:\n"
-    #         result += "-" * 25 + "\n"
-    #         for table_name in tables:
-    #             result += f"{table_name}\n"
-            
-    #         return result
-    #     except Exception as e:
-    #         raise ExecutionError(f"Error showing tables: {str(e)}")
 
     def _execute_show_tables(self, query):
         """Return a structured list of tables."""
@@ -489,46 +472,6 @@ class Executor:
 
         except Exception as e:
             raise ExecutionError(f"Error describing table: {str(e)}")
-
-    # def _execute_describe(self, query):
-    #     """Execute a DESCRIBE statement."""
-    #     table_name = query["table_name"]
-        
-    #     try:
-    #         if not self.schema_manager.table_exists(table_name):
-    #             raise ExecutionError(f"Table '{table_name}' does not exist")
-            
-    #         # Get table info
-    #         table_info = self.schema_manager.get_table_info(table_name)
-    #         columns = table_info["columns"]
-    #         primary_key = table_info["primary_key"]
-    #         foreign_keys = table_info["foreign_keys"]
-    #         indexes = table_info["indexes"]
-            
-    #         # Format the result
-    #         result = f"Table: {table_name}\n"
-    #         result += "-" * 60 + "\n"
-    #         result += "Column Name | Type | Primary Key | Indexed\n"
-    #         result += "-" * 60 + "\n"
-            
-    #         for col in columns:
-    #             col_name = col["name"]
-    #             col_type = "INTEGER" if col["type"] == DataType.INTEGER else "STRING"
-    #             is_pk = "Yes" if col_name == primary_key else "No"
-    #             is_indexed = "Yes" if col_name in indexes else "No"
-                
-    #             result += f"{col_name} | {col_type} | {is_pk} | {is_indexed}\n"
-            
-    #         # Add foreign key information if any
-    #         if foreign_keys:
-    #             result += "\nForeign Keys:\n"
-    #             result += "-" * 60 + "\n"
-    #             for fk_col, fk_ref in foreign_keys.items():
-    #                 result += f"{fk_col} -> {fk_ref['table']}.{fk_ref['column']}\n"
-            
-    #         return result
-    #     except Exception as e:
-    #         raise ExecutionError(f"Error describing table: {str(e)}")
         
     def _execute_insert(self, query):
         """Execute an INSERT statement."""
@@ -796,6 +739,8 @@ class Executor:
         table_name = query["table_name"]
         where_condition = query["where"]
         
+        pk_col = self.schema_manager.get_primary_key(table_name)
+
         try:
             # Get all records that match the WHERE condition
             matching_records = self._execute_where(table_name, where_condition)
@@ -806,27 +751,35 @@ class Executor:
             delete_count = 0
             
             # Check referential integrity constraints
-            for record_id, record in matching_records:
-                # Check if any other table references this record
-                for other_table in self.schema_manager.get_tables():
-                    if other_table == table_name:
+            if pk_col:
+                for record_id, record in matching_records:
+                    pk_value = record.get(pk_col)
+                    if pk_value is None:
                         continue
-                    
-                    foreign_keys = self.schema_manager.get_foreign_keys(other_table)
-                    for fk_col, fk_ref in foreign_keys.items():
-                        if fk_ref["table"] == table_name:
-                            # This table is referenced by another table
-                            ref_col = fk_ref["column"]
-                            
-                            # Get the referenced column value from this record
-                            ref_value = record.get(ref_col)
-                            
-                            # Check if any record in the other table references this value
-                            if self.schema_manager.index_exists(other_table, fk_col):
-                                ref_records = self.index_manager.lookup(other_table, fk_col, ref_value)
-                                if ref_records:
-                                    raise ExecutionError(f"Cannot delete record with {ref_col}={ref_value} because it is referenced by table '{other_table}'")
-            
+
+                    for other_table in self.schema_manager.get_tables():
+                        if other_table == table_name:
+                            continue
+
+                        foreign_keys = self.schema_manager.get_foreign_keys(other_table)
+                        for fk_col, fk_ref in foreign_keys.items():
+                            if fk_ref["table"] == table_name and fk_ref["column"] == pk_col:
+                                # Check if any rows in other_table reference this pk_value
+                                if self.schema_manager.index_exists(other_table, fk_col):
+                                    matches = self.index_manager.lookup(other_table, fk_col, pk_value)
+                                    if matches:
+                                        raise ExecutionError(
+                                            f"Cannot delete: {pk_col}={pk_value} is still referenced by {other_table}.{fk_col}"
+                                        )
+                                else:
+                                    for rec in self.disk_manager.read_table(other_table):
+                                        if rec.get("__deleted__"):
+                                            continue
+                                        if rec.get(fk_col) == pk_value:
+                                            raise ExecutionError(
+                                                f"Cannot delete: {pk_col}={pk_value} is still referenced by {other_table}.{fk_col}"
+                                            )
+                                                    
             # Delete each matching record
             for record_id, record in matching_records:
                 # Update indexes first
