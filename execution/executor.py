@@ -12,6 +12,7 @@ import csv
 
 from common.exceptions import ExecutionError, DBMSError
 from common.types import DataType
+from collections import defaultdict
 
 class Executor:
     """
@@ -864,7 +865,7 @@ class Executor:
             # 8) Inject the pre‑filtered lists so _execute_join will use them
             query["_left_records"]  = left_recs
             query["_right_records"] = right_recs
-
+            
             # 9) Do the join
             joined = self._execute_join(query)
 
@@ -1399,6 +1400,7 @@ class Executor:
         Returns:
             list: List of (None, joined_record) tuples
         """
+        
         right_table = join_info["table"]
         right_table_alias = join_info.get("alias", right_table)
         join_condition = join_info["condition"]
@@ -1775,27 +1777,38 @@ class Executor:
                 probe_col,  probe_alias = inner_column, inner_alias
 
             # BUILD phase: make hash map
-            hash_map = {}
-            for rec in build_rows:
-                key = rec.get(build_col)
-                if key is None: continue
-                hash_map.setdefault(key, []).append(rec)
+            hash_map = defaultdict(list)
 
+            for rec in build_rows:
+                if rec.get("__deleted__", False):
+                    continue
+
+                key = rec.get(build_col)
+                if key is None:
+                    continue
+
+                if isinstance(key, str) and key.isdigit():
+                    key = int(key)
+
+                hash_map[key].append(rec)
             # PROBE phase: join
             result = []
             for rec in probe_rows:
                 key = rec.get(probe_col)
                 matches = hash_map.get(key)
-                if not matches: continue
+                if not matches:
+                    continue
                 for build_rec in matches:
                     joined = {}
                     # prefix build side fields
                     for col, val in build_rec.items():
-                        if col.startswith("__"): continue
+                        if col.startswith("__"):
+                            continue
                         joined[f"{build_alias}.{col}"] = val
                     # prefix probe side fields
                     for col, val in rec.items():
-                        if col.startswith("__"): continue
+                        if col.startswith("__"):
+                            continue
                         joined[f"{probe_alias}.{col}"] = val
                     result.append((None, joined))
 

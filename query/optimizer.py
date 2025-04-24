@@ -151,9 +151,13 @@ class QueryOptimizer:
         return condition
     
     def _select_join_method(self, from_table, join_table, join_condition):
-        # These are the actual tables from the parsed SELECT clause
-        left_table = from_table
-        right_table = join_table
+
+        
+        # Resolve real table names if `from_table` or `join_table` is a dict
+        left_table = from_table["name"] if isinstance(from_table, dict) else from_table
+        right_table = join_table["table"] if isinstance(join_table, dict) else join_table
+
+        print(f"[JOIN OPTIMIZER] left_table = {left_table}, right_table = {right_table}")
 
         left_key = join_condition["left_column"]
         right_key = join_condition["right_column"]
@@ -164,7 +168,13 @@ class QueryOptimizer:
         left_indexed = self.schema_manager.index_exists(left_table, left_key)
         right_indexed = self.schema_manager.index_exists(right_table, right_key)
 
+        # Extract aliases if available
+        left_alias = from_table.get("alias", left_table) if isinstance(from_table, dict) else left_table
+        right_alias = join_table.get("alias", right_table) if isinstance(join_table, dict) else right_table
+
+
         # Use hash-join for big sizes
+        print(f"left: {left_size}, right: {right_size}")
         if left_size * right_size > 1e7:
             if left_size <= right_size:
                 outer, inner        = left_table,  join_table
@@ -176,12 +186,15 @@ class QueryOptimizer:
                 swapped             = True
             print(f"outer: {outer}, inner: {inner}")
 
+            # TODO Proper alias handling
             return {
                 "method":       "hash-join",
                 "outer":        outer,
                 "inner":        inner,
                 "outer_column": outer_col,
                 "inner_column": inner_col,
+                "outer_alias":  left_alias if not swapped else right_alias,
+                "inner_alias":  right_alias if not swapped else left_alias,
                 "swapped":      swapped
             }
         # Use index-nested-loop with smaller table as outer
@@ -425,6 +438,7 @@ class QueryOptimizer:
                     join_cost = record_count * (1 + 0.1 * (1 + min(1, 1000 * record_count))) + \
                               join_records * (1 + 0.1 * (1 + min(1, 1000 * join_records)))
                 elif join_method == "index-nested-loop":
+                    print("index-nested-loop")
                     # Index nested loop uses index lookup for inner table
                     join_cost = plan.get("filter", {}).get("output_records", record_count) * 10  # Assume index lookups are 10x faster
                 elif join_method == "hash-join":

@@ -343,12 +343,22 @@ def p_aggregate_function(parser, p):
                           | AVG LPAREN ID RPAREN
                           | SUM LPAREN ID RPAREN
                           | MAX LPAREN ID RPAREN
-                          | MIN LPAREN ID RPAREN'''
+                          | MIN LPAREN ID RPAREN
+                          | COUNT LPAREN ID DOT ID RPAREN
+                          | AVG LPAREN ID DOT ID RPAREN
+                          | SUM LPAREN ID DOT ID RPAREN
+                          | MAX LPAREN ID DOT ID RPAREN
+                          | MIN LPAREN ID DOT ID RPAREN'''
     func_name = p[1].upper()
-    arg = p[3]
     
-    if arg == '*' and func_name == 'COUNT':
+    if len(p) == 5:  # COUNT(*)
         arg = '*'
+    elif len(p) == 6:  # e.g., SUM(col1)
+        arg = p[3]
+    elif len(p) == 7:  # e.g., SUM(t1.col1)
+        arg = f"{p[3]}.{p[5]}"
+    else:
+        raise SyntaxError("Invalid aggregation syntax")
     
     p[0] = {
         'type': 'aggregation',
