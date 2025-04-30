@@ -244,6 +244,7 @@ class Executor:
 
             # Build unwrapped row
             new_row = {}
+
             for col_name, value in rec.items():
                 try:
                     if col_defs[col_name]["type"] == DataType.INTEGER:
@@ -1159,37 +1160,46 @@ class Executor:
             if 'alias' in table_name:
                 self.table_aliases[table_name['alias']] = table_name['name']
             real_table_name = table_name['name']
-        
+
         try:
-            # Try to read all records from the table
             all_records = self.disk_manager.read_table(real_table_name)
         except Exception as e:
-            # If table doesn't exist or is empty, raise appropriate error
             from common.exceptions import StorageError
             raise StorageError(f"Table file for '{real_table_name}' does not exist")
-        
-        result = []
-        
-        # If no WHERE clause, return all records
+
         if not condition:
             return [(i, r) for i, r in enumerate(all_records) if not r.get("__deleted__", False)]
-        
-        # Evaluate each record against the condition
+
+        col_name = condition['left']['name'] if condition['left']['type'] == 'column' else None
+        operator = condition['operator']
+        value = condition['right']['value'] if 'value' in condition['right'] else None
+
+        result = []
+
+        # Index-based optimization for simple conditions
+        if col_name and self.schema_manager.index_exists(real_table_name, col_name):
+            try:
+                matches = self.index_manager.lookup(real_table_name, col_name, value, operators=operator)
+                for rid in matches:
+                    rec = all_records[rid]
+                    if not rec.get("__deleted__", False):
+                        result.append((rid, rec))
+                return result
+            except Exception:
+                pass  # Fallback to full scan if index lookup fails
+
+        # Fallback: full table scan
         for i, record in enumerate(all_records):
             if record.get("__deleted__", False):
                 continue
-            
-            # Store the table name and its alias in the record for column resolution
             if isinstance(table_name, dict) and 'alias' in table_name:
-                # Add alias info to the record for column resolution
                 record['__table_name__'] = real_table_name
                 record['__table_alias__'] = table_name['alias']
-            
             if self._evaluate_condition(condition, record):
                 result.append((i, record))
-        
+
         return result
-        
+
     def _execute_join(self, query):
         """
         Execute a JOIN operation.
